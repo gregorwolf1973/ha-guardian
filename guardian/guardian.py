@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 PORT = 8099
 
 # Directories to scan for log files
@@ -105,6 +105,14 @@ PATTERNS = {
 
 URL_RE = re.compile(r"URL:\s*'([^']*)'")
 
+# Keywords that suggest auth-related log lines (used for unmatched detection)
+AUTH_KEYWORDS_RE = re.compile(
+    r"(?:login|auth|password|credential|sign.?in|session|token|"
+    r"401|403|forbidden|denied|locked|brute|attempt|fail|invalid|"
+    r"wrong|bad.?pass|blocked|reject|unauth)",
+    re.IGNORECASE,
+)
+
 
 def extract_ip(line: str):
     """Try all patterns and return (ip, pattern_name) or None."""
@@ -119,6 +127,11 @@ def extract_ip(line: str):
                 except ValueError:
                     pass
     return None
+
+
+def _is_auth_related(line: str) -> bool:
+    """Check if a line looks auth-related but didn't match any pattern."""
+    return bool(AUTH_KEYWORDS_RE.search(line))
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +590,48 @@ class SourceManager:
     def get_supervisor_token(self) -> str:
         return self._supervisor_token
 
+    def get_source(self, source_id: str) -> Optional[dict]:
+        return self._sources.get(source_id)
+
+    async def preview_source(self, source_id: str, lines: int = 50) -> list:
+        """Return the last N lines of a log source (for debugging)."""
+        src = self._sources.get(source_id)
+        if not src:
+            return []
+
+        if src["type"] == "file":
+            path = src.get("path", "")
+            if not path or not Path(path).exists():
+                return []
+            try:
+                with open(path, errors="replace") as f:
+                    all_lines = f.readlines()
+                return [l.rstrip() for l in all_lines[-lines:]]
+            except Exception as e:
+                return [f"Error reading file: {e}"]
+
+        elif src["type"] == "addon":
+            slug = src.get("slug", "")
+            token = self._supervisor_token
+            if not slug or not token:
+                return ["No Supervisor token available"]
+            try:
+                async with aiohttp_client.ClientSession() as session:
+                    headers = {"Authorization": f"Bearer {token}"}
+                    url = f"{SUPERVISOR_URL}/addons/{slug}/logs"
+                    async with session.get(
+                        url, headers=headers,
+                        timeout=aiohttp_client.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status != 200:
+                            return [f"Supervisor API returned {resp.status}"]
+                        text = await resp.text()
+                return text.splitlines()[-lines:]
+            except Exception as e:
+                return [f"Error fetching addon logs: {e}"]
+
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Ban Manager
@@ -832,6 +887,8 @@ class LogScanner:
         self.detector = detector
         self._file_state: dict = {}   # path -> {"inode": int, "pos": int}
         self._addon_state: dict = {}  # slug -> last_length
+        # Buffer of recent unmatched auth-related lines (for debugging)
+        self.unmatched_lines: deque = deque(maxlen=200)
 
     async def run(self):
         await self.source_mgr.discover()
@@ -908,19 +965,30 @@ class LogScanner:
             log.debug("Error polling addon %s: %s", slug, e)
 
     async def _process_line(self, line: str, src: dict):
-        result = extract_ip(line)
-        if not result:
+        line = line.strip()
+        if not line:
             return
-        ip, pattern_name = result
-        url = ""
-        um = URL_RE.search(line)
-        if um:
-            url = um.group(1)
-        await self.detector.record(
-            ip=ip, source_id=src["id"],
-            source_name=src.get("name", src["id"]),
-            url=url, pattern=pattern_name,
-        )
+        result = extract_ip(line)
+        if result:
+            ip, pattern_name = result
+            url = ""
+            um = URL_RE.search(line)
+            if um:
+                url = um.group(1)
+            await self.detector.record(
+                ip=ip, source_id=src["id"],
+                source_name=src.get("name", src["id"]),
+                url=url, pattern=pattern_name,
+            )
+        elif _is_auth_related(line):
+            # Line looks auth-related but no pattern matched — log for debugging
+            self.unmatched_lines.appendleft({
+                "time": datetime.now(timezone.utc).isoformat(),
+                "source_id": src["id"],
+                "source_name": src.get("name", src["id"]),
+                "line": line[:500],  # truncate very long lines
+            })
+            log.debug("UNMATCHED auth line [%s]: %s", src.get("name", "?"), line[:200])
 
     async def rediscover_loop(self):
         while True:
@@ -941,7 +1009,7 @@ def _index_html() -> str:
     return _INDEX_HTML
 
 
-def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
+def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.Application:
     app = web.Application()
 
     async def handle_index(req):
@@ -1041,6 +1109,20 @@ def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
     async def handle_health(req):
         return web.json_response({"status": "ok", "version": VERSION})
 
+    # --- Source Preview (last N lines of a log) ---
+    async def handle_preview_source(req):
+        d = await req.json()
+        sid = d.get("id", "")
+        n = min(int(d.get("lines", 50)), 200)
+        lines = await source_mgr.preview_source(sid, n)
+        return web.json_response({"lines": lines})
+
+    # --- Unmatched auth lines (for debugging patterns) ---
+    async def handle_unmatched(req):
+        if scanner:
+            return web.json_response(list(scanner.unmatched_lines))
+        return web.json_response([])
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/stats", handle_stats)
     app.router.add_get("/api/events", handle_events)
@@ -1053,6 +1135,8 @@ def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
     app.router.add_get("/api/sources", handle_get_sources)
     app.router.add_post("/api/sources/toggle", handle_toggle_source)
     app.router.add_post("/api/sources/discover", handle_discover_sources)
+    app.router.add_post("/api/sources/preview", handle_preview_source)
+    app.router.add_get("/api/unmatched", handle_unmatched)
     app.router.add_get("/api/alerts", handle_get_alerts)
     app.router.add_get("/api/config", handle_get_config)
     app.router.add_post("/api/config", handle_post_config)
@@ -1075,7 +1159,7 @@ async def main():
 
     log.info("HA Guardian %s starting on port %d", VERSION, PORT)
 
-    app = build_app(config, bans, detector, source_mgr, alert_tracker)
+    app = build_app(config, bans, detector, source_mgr, alert_tracker, scanner)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)

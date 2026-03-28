@@ -189,7 +189,7 @@
   <div class="header-left">
     <span class="header-icon">🛡️</span>
     <h1>HA Guardian</h1>
-    <span class="version-badge" id="ver">v1.3.0</span>
+    <span class="version-badge" id="ver">v1.4.0</span>
   </div>
   <div>
     <span class="status-dot" id="statusDot"></span>
@@ -223,6 +223,7 @@
   <button class="tab-btn" data-tab="alerts">Alerts</button>
   <button class="tab-btn" data-tab="whitelist">Whitelist</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
+  <button class="tab-btn" data-tab="debug">Debug</button>
 </div>
 
 <!-- DASHBOARD -->
@@ -291,10 +292,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Enabled</th><th>Name</th><th>Type</th><th>Path / Slug</th><th>Last Modified</th><th>Size</th><th>Status</th></tr>
+        <tr><th>Enabled</th><th>Name</th><th>Type</th><th>Path / Slug</th><th>Last Modified</th><th>Size</th><th>Status</th><th>Preview</th></tr>
       </thead>
       <tbody id="sourcesTable">
-        <tr class="empty-row"><td colspan="7">No sources discovered</td></tr>
+        <tr class="empty-row"><td colspan="8">No sources discovered</td></tr>
       </tbody>
     </table>
   </div>
@@ -384,10 +385,43 @@
   </form>
 </div>
 
+<!-- DEBUG -->
+<div id="tab-debug" class="tab-pane">
+  <div class="section-header">
+    <h2>Unmatched Auth Lines</h2>
+    <button class="btn btn-ghost btn-sm" onclick="loadUnmatched()">↻ Refresh</button>
+  </div>
+  <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
+    Lines from enabled log sources that contain auth-related keywords but didn't match any detection pattern.
+    Use this to identify new log formats that need pattern support.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Source</th><th>Log Line</th></tr>
+      </thead>
+      <tbody id="unmatchedTable">
+        <tr class="empty-row"><td colspan="3">No unmatched lines</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- LOG PREVIEW MODAL -->
+<div id="previewModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closePreview()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:900px;margin:0 auto;max-height:90vh;display:flex;flex-direction:column">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <h3 id="previewTitle" style="font-size:14px">Log Preview</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closePreview()">✕ Close</button>
+    </div>
+    <pre id="previewContent" style="padding:14px 18px;overflow:auto;flex:1;font-size:11px;line-height:1.6;color:var(--text-muted);white-space:pre-wrap;word-break:break-all;margin:0;max-height:70vh"></pre>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
-const TABS = ['dashboard','bans','sources','alerts','whitelist','settings'];
+const TABS = ['dashboard','bans','sources','alerts','whitelist','settings','debug'];
 let activeTab = 'dashboard';
 
 // ---- Tabs ----
@@ -408,6 +442,7 @@ function refreshTab(tab) {
   else if (tab === 'alerts') loadAlerts();
   else if (tab === 'whitelist') loadWhitelist();
   else if (tab === 'settings') loadSettings();
+  else if (tab === 'debug') loadUnmatched();
 }
 
 // ---- API ----
@@ -527,7 +562,7 @@ async function loadSources() {
   try {
     const sources = await api('GET', 'api/sources');
     const tb = document.getElementById('sourcesTable');
-    if (!sources.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No sources discovered</td></tr>'; return; }
+    if (!sources.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="8">No sources discovered</td></tr>'; return; }
     tb.innerHTML = sources.map(s => {
       const detail = s.type === 'file' ? esc(s.path || '') : esc(s.slug || '');
       const typeLabel = s.type === 'file'
@@ -538,6 +573,8 @@ async function loadSources() {
         : (s.last_modified ? '<span class="badge badge-success">Active</span>' : '');
       const lastMod = s.last_modified ? relTime(s.last_modified) : '–';
       const size = s.size ? fmtSize(s.size) : '–';
+      const sid = s.id.replace(/'/g, "\\'");
+      const sname = (s.name || '').replace(/'/g, "\\'");
       return `<tr>
         <td>
           <label class="toggle">
@@ -551,6 +588,7 @@ async function loadSources() {
         <td class="countdown">${lastMod}</td>
         <td style="font-size:12px">${size}</td>
         <td>${stateLabel}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="previewSource('${sid}','${sname}')">Preview</button></td>
       </tr>`;
     }).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -639,6 +677,49 @@ async function saveSettings(ev) {
       trusted_domains: domains,
     });
     toast('Settings saved', 'ok'); loadStats();
+  } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+// ---- Log Preview ----
+async function previewSource(id, name) {
+  document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
+  document.getElementById('previewContent').textContent = 'Loading…';
+  document.getElementById('previewModal').style.display = 'block';
+  try {
+    const data = await api('POST', 'api/sources/preview', { id, lines: 100 });
+    const lines = data.lines || [];
+    if (!lines.length) {
+      document.getElementById('previewContent').textContent = '(empty or not accessible)';
+      return;
+    }
+    // Highlight auth-related keywords
+    document.getElementById('previewContent').innerHTML = lines.map(l => {
+      const el = esc(l);
+      return el.replace(/(login|auth|password|fail|denied|invalid|wrong|401|403|blocked|reject|credential|attempt|brute)/gi,
+        '<span style="color:var(--warn);font-weight:600">$1</span>');
+    }).join('\n');
+  } catch (e) {
+    document.getElementById('previewContent').textContent = 'Error: ' + e.message;
+  }
+}
+function closePreview() {
+  document.getElementById('previewModal').style.display = 'none';
+}
+
+// ---- Debug / Unmatched ----
+async function loadUnmatched() {
+  try {
+    const lines = await api('GET', 'api/unmatched');
+    const tb = document.getElementById('unmatchedTable');
+    if (!lines.length) {
+      tb.innerHTML = '<tr class="empty-row"><td colspan="3">No unmatched auth lines detected yet. Try triggering a failed login on an enabled source.</td></tr>';
+      return;
+    }
+    tb.innerHTML = lines.map(l => `<tr>
+      <td class="countdown">${relTime(l.time)}</td>
+      <td style="font-size:12px">${esc(l.source_name)}</td>
+      <td><code style="font-size:11px;color:var(--warn);word-break:break-all">${esc(l.line)}</code></td>
+    </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 
