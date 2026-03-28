@@ -8,7 +8,7 @@ import os
 import re
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from glob import glob
+from fnmatch import fnmatch
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Optional
@@ -21,12 +21,43 @@ import yaml
 # Constants
 # ---------------------------------------------------------------------------
 OPTIONS_FILE = "/data/options.json"
+STATE_FILE = "/data/guardian_state.json"
 BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PORT = 8099
+
+# Directories to scan for log files
+LOG_SCAN_DIRS = [
+    "/config",
+    "/config/logs",
+    "/addon_configs",
+    "/share",
+    "/media",
+]
+
+# Common log file patterns (glob-style, matched recursively)
+LOG_FILE_PATTERNS = [
+    "*.log",
+    "*.log.*",
+    "*/logs/*.log",
+    "*/log/*.log",
+    "*/log/*.txt",
+    "*/data/*.log",
+]
+
+# Skip these paths during discovery to avoid noise
+LOG_SKIP_PATTERNS = [
+    "*/node_modules/*",
+    "*/.git/*",
+    "*/cache/*",
+    "*/tmp/*",
+]
+
+# Max depth for recursive scanning
+MAX_SCAN_DEPTH = 4
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +67,7 @@ logging.basicConfig(
 log = logging.getLogger("guardian")
 
 # ---------------------------------------------------------------------------
-# Detection patterns — each returns an IP from group(1) or group(2)
+# Detection patterns — each yields an IP via group(1) or group(2)
 # ---------------------------------------------------------------------------
 PATTERNS = {
     "ha_ban": re.compile(
@@ -44,16 +75,33 @@ PATTERNS = {
         r".*?(?:from\s+\S+\s+\(([0-9a-fA-F:.]+)\)|from\s+([0-9a-fA-F:.]+))"
     ),
     "nginx_auth": re.compile(
-        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s.*\"\s+(?:401|403)\s"
+        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+        r'.*"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s.*"\s+(?:401|403)\s'
     ),
     "generic_fail": re.compile(
         r"(?:authentication fail|login fail|invalid password|unauthorized|"
-        r"access denied|bad password|failed login|invalid credential)"
+        r"access denied|bad password|failed login|invalid credential|"
+        r"wrong password|login error|auth error|permission denied)"
         r".*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
         re.IGNORECASE,
     ),
     "ssh_fail": re.compile(
         r"[Ff]ailed password for.*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+    ),
+    "nextcloud": re.compile(
+        r'"remoteAddr"\s*:\s*"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"'
+        r'.*"message"\s*:\s*"(?:Login failed|Bruteforce)',
+        re.IGNORECASE,
+    ),
+    "vaultwarden": re.compile(
+        r"(?:Username or password is incorrect|Invalid admin password)"
+        r".*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        re.IGNORECASE,
+    ),
+    "dovecot_postfix": re.compile(
+        r"(?:auth failed|authentication failure|SASL .+ authentication failed)"
+        r".*?(?:rip=|from=\[?)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        re.IGNORECASE,
     ),
 }
 
@@ -76,20 +124,90 @@ def extract_ip(line: str):
 
 
 # ---------------------------------------------------------------------------
-# Config
+# Persistent State — survives addon restarts
+# ---------------------------------------------------------------------------
+class PersistentState:
+    """
+    Separate state file that persists whitelist, config overrides, and other
+    runtime data across addon restarts. HA Supervisor overwrites options.json
+    on each restart, so we store user-modified values here instead.
+    """
+
+    def __init__(self):
+        self._path = STATE_FILE
+        self._data: dict = {
+            "whitelist": [],
+            "trusted_domains": [],
+            "config_overrides": {},
+        }
+        self._load()
+
+    def _load(self):
+        try:
+            if Path(self._path).exists():
+                with open(self._path) as f:
+                    saved = json.load(f)
+                self._data.update(saved)
+                log.info("Loaded persistent state from %s", self._path)
+        except Exception as e:
+            log.warning("Could not load state: %s", e)
+
+    def save(self):
+        try:
+            tmp = self._path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self._data, f, indent=2)
+            os.replace(tmp, self._path)
+        except Exception as e:
+            log.error("Could not save state: %s", e)
+
+    # -- Whitelist --
+    @property
+    def whitelist(self) -> list:
+        return self._data.get("whitelist", [])
+
+    @whitelist.setter
+    def whitelist(self, value: list):
+        self._data["whitelist"] = value
+        self.save()
+
+    # -- Trusted domains --
+    @property
+    def trusted_domains(self) -> list:
+        return self._data.get("trusted_domains", [])
+
+    @trusted_domains.setter
+    def trusted_domains(self, value: list):
+        self._data["trusted_domains"] = value
+        self.save()
+
+    # -- Config overrides --
+    @property
+    def config_overrides(self) -> dict:
+        return self._data.get("config_overrides", {})
+
+    def set_override(self, key: str, value):
+        if "config_overrides" not in self._data:
+            self._data["config_overrides"] = {}
+        self._data["config_overrides"][key] = value
+        self.save()
+
+
+# ---------------------------------------------------------------------------
+# Config — merges options.json defaults with persistent state overrides
 # ---------------------------------------------------------------------------
 class Config:
-    def __init__(self):
+    def __init__(self, state: PersistentState):
+        self._state = state
         self.max_attempts: int = 5
         self.window_minutes: int = 5
         self.ban_duration_minutes: int = 240
         self.alert_window_hours: int = 24
         self.log_file: str = LOG_FILE_DEFAULT
-        self.whitelist: list = []
-        self.trusted_domains: list = []
         self._load()
 
     def _load(self):
+        # 1) Load defaults from Supervisor options
         try:
             with open(OPTIONS_FILE) as f:
                 d = json.load(f)
@@ -98,17 +216,52 @@ class Config:
             self.ban_duration_minutes = max(0, int(d.get("ban_duration_minutes", 240)))
             self.alert_window_hours = max(1, int(d.get("alert_window_hours", 24)))
             self.log_file = d.get("log_file", LOG_FILE_DEFAULT)
-            self.whitelist = list(d.get("whitelist", []))
-            self.trusted_domains = list(d.get("trusted_domains", []))
+
+            # Seed state from options.json if state has empty whitelist
+            # (first run after install)
+            opts_wl = d.get("whitelist", [])
+            opts_td = d.get("trusted_domains", [])
+            if not self._state.whitelist and opts_wl:
+                self._state.whitelist = opts_wl
+            if not self._state.trusted_domains and opts_td:
+                self._state.trusted_domains = opts_td
         except Exception as e:
             log.warning("Could not load options.json: %s — using defaults", e)
 
+        # 2) Apply persistent overrides
+        ov = self._state.config_overrides
+        if "max_attempts" in ov:
+            self.max_attempts = max(1, int(ov["max_attempts"]))
+        if "window_minutes" in ov:
+            self.window_minutes = max(1, int(ov["window_minutes"]))
+        if "ban_duration_minutes" in ov:
+            self.ban_duration_minutes = max(0, int(ov["ban_duration_minutes"]))
+        if "alert_window_hours" in ov:
+            self.alert_window_hours = max(1, int(ov["alert_window_hours"]))
+
+    @property
+    def whitelist(self) -> list:
+        return self._state.whitelist
+
+    @whitelist.setter
+    def whitelist(self, value: list):
+        self._state.whitelist = value
+
+    @property
+    def trusted_domains(self) -> list:
+        return self._state.trusted_domains
+
+    @trusted_domains.setter
+    def trusted_domains(self, value: list):
+        self._state.trusted_domains = value
+
     def save(self):
-        try:
-            with open(OPTIONS_FILE, "w") as f:
-                json.dump(self.to_dict(), f, indent=2)
-        except Exception as e:
-            log.error("Could not save options: %s", e)
+        """Persist config changes made via UI."""
+        self._state.set_override("max_attempts", self.max_attempts)
+        self._state.set_override("window_minutes", self.window_minutes)
+        self._state.set_override("ban_duration_minutes", self.ban_duration_minutes)
+        self._state.set_override("alert_window_hours", self.alert_window_hours)
+        # Whitelist and trusted_domains are auto-saved via property setters
 
     def to_dict(self) -> dict:
         return {
@@ -141,6 +294,66 @@ class Config:
 # ---------------------------------------------------------------------------
 # Source Manager — discovers and manages log sources
 # ---------------------------------------------------------------------------
+def _should_skip(path: str) -> bool:
+    for pat in LOG_SKIP_PATTERNS:
+        if fnmatch(path, pat):
+            return True
+    return False
+
+
+def _scan_directory_for_logs(base_dir: str, max_depth: int = MAX_SCAN_DEPTH) -> list:
+    """Recursively scan a directory for log files."""
+    found = []
+    base = Path(base_dir)
+    if not base.is_dir():
+        return found
+    try:
+        for item in base.iterdir():
+            path_str = str(item)
+            if _should_skip(path_str):
+                continue
+            if item.is_file():
+                name_lower = item.name.lower()
+                if (name_lower.endswith(".log")
+                        or name_lower.endswith(".log.1")
+                        or name_lower.endswith(".log.txt")
+                        or (name_lower.endswith(".txt") and "log" in name_lower)):
+                    # Skip tiny or empty files
+                    try:
+                        if item.stat().st_size > 0:
+                            found.append(path_str)
+                    except OSError:
+                        pass
+            elif item.is_dir() and max_depth > 0:
+                found.extend(_scan_directory_for_logs(path_str, max_depth - 1))
+    except PermissionError:
+        pass
+    except Exception as e:
+        log.debug("Error scanning %s: %s", base_dir, e)
+    return found
+
+
+def _friendly_name(path: str) -> str:
+    """Generate a human-readable name from a log file path."""
+    p = Path(path)
+    parts = p.parts
+    # For addon_configs, use the addon dir name
+    if "/addon_configs/" in path and len(parts) >= 3:
+        addon_dir = parts[parts.index("addon_configs") + 1] if "addon_configs" in parts else ""
+        # Clean up slug: "a0d7b954_nextcloud" -> "Nextcloud"
+        name = addon_dir.split("_", 1)[-1] if "_" in addon_dir else addon_dir
+        name = name.replace("-", " ").replace("_", " ").title()
+        return f"{name}: {p.name}"
+    # For share/media, include parent dir
+    stem = p.stem.replace("-", " ").replace("_", " ").title()
+    parent = p.parent.name
+    if parent and parent not in ("config", "logs", "log"):
+        parent_clean = parent.split("_", 1)[-1] if "_" in parent else parent
+        parent_clean = parent_clean.replace("-", " ").replace("_", " ").title()
+        return f"{parent_clean}: {stem}"
+    return stem
+
+
 class SourceManager:
     def __init__(self, config: Config):
         self.config = config
@@ -149,7 +362,6 @@ class SourceManager:
         self._load()
 
     def _default_sources(self) -> list:
-        """Create default file source for HA core log."""
         return [
             {
                 "id": "file:" + self.config.log_file,
@@ -178,30 +390,36 @@ class SourceManager:
 
     def _save(self):
         try:
-            with open(SOURCES_FILE, "w") as f:
+            tmp = SOURCES_FILE + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump({"sources": list(self._sources.values())}, f, indent=2)
+            os.replace(tmp, SOURCES_FILE)
         except Exception as e:
             log.error("Could not save sources: %s", e)
 
     async def discover(self):
-        """Discover log files and addon sources."""
+        """Discover log files in all mapped directories + addon logs via API."""
         discovered = 0
 
-        # 1) Scan /config for log files
-        for path in sorted(glob("/config/*.log")) + sorted(glob("/config/logs/*.log")):
-            sid = "file:" + path
-            if sid not in self._sources:
-                name = Path(path).stem.replace("-", " ").replace("_", " ").title()
-                self._sources[sid] = {
-                    "id": sid,
-                    "name": name,
-                    "type": "file",
-                    "path": path,
-                    "enabled": path == self.config.log_file,
-                }
-                discovered += 1
+        # 1) Scan all mapped directories for log files (recursive)
+        for base_dir in LOG_SCAN_DIRS:
+            for path in _scan_directory_for_logs(base_dir):
+                sid = "file:" + path
+                if sid not in self._sources:
+                    name = _friendly_name(path)
+                    # Auto-enable the main HA log, everything else off by default
+                    enabled = (path == self.config.log_file)
+                    self._sources[sid] = {
+                        "id": sid,
+                        "name": name,
+                        "type": "file",
+                        "path": path,
+                        "enabled": enabled,
+                    }
+                    discovered += 1
+                    log.info("Discovered log: %s (%s)", name, path)
 
-        # 2) Discover HA addons via Supervisor API
+        # 2) Discover HA addon docker logs via Supervisor API
         if self._supervisor_token:
             try:
                 async with aiohttp_client.ClientSession() as session:
@@ -210,7 +428,9 @@ class SourceManager:
                         "Content-Type": "application/json",
                     }
                     async with session.get(
-                        f"{SUPERVISOR_URL}/addons", headers=headers, timeout=aiohttp_client.ClientTimeout(total=10)
+                        f"{SUPERVISOR_URL}/addons",
+                        headers=headers,
+                        timeout=aiohttp_client.ClientTimeout(total=10),
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -219,32 +439,32 @@ class SourceManager:
                                 slug = addon.get("slug", "")
                                 state = addon.get("state", "")
                                 name = addon.get("name", slug)
-                                # Skip ourselves
                                 if "ha_guardian" in slug:
                                     continue
                                 sid = "addon:" + slug
                                 if sid not in self._sources:
                                     self._sources[sid] = {
                                         "id": sid,
-                                        "name": f"Addon: {name}",
+                                        "name": f"Docker: {name}",
                                         "type": "addon",
                                         "slug": slug,
                                         "state": state,
                                         "enabled": False,
                                     }
                                     discovered += 1
+                                    log.info("Discovered addon: %s (%s)", name, slug)
                                 else:
                                     self._sources[sid]["state"] = state
-                                    self._sources[sid]["name"] = f"Addon: {name}"
+                                    self._sources[sid]["name"] = f"Docker: {name}"
             except Exception as e:
                 log.warning("Could not discover addons: %s", e)
 
         if discovered:
-            log.info("Discovered %d new log source(s)", discovered)
-            self._save()
+            log.info("Discovered %d new log source(s) — total: %d", discovered, len(self._sources))
+        self._save()
 
     def get_all(self) -> list:
-        return list(self._sources.values())
+        return sorted(self._sources.values(), key=lambda s: (not s.get("enabled"), s.get("name", "")))
 
     def get_enabled(self, source_type: Optional[str] = None) -> list:
         return [
@@ -402,7 +622,6 @@ class BanManager:
 class AlertTracker:
     def __init__(self, config: Config):
         self.config = config
-        # source_id -> deque of {"time": datetime, "ip": str}
         self._records: dict = defaultdict(lambda: deque(maxlen=5000))
 
     def record(self, source_id: str, source_name: str, ip: str):
@@ -413,7 +632,6 @@ class AlertTracker:
         })
 
     def get_alerts(self) -> list:
-        """Return per-source alert summaries for the configured window."""
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=self.config.alert_window_hours)
         alerts = []
@@ -447,7 +665,7 @@ class AlertTracker:
 
 
 # ---------------------------------------------------------------------------
-# Detector — processes parsed log lines
+# Detector
 # ---------------------------------------------------------------------------
 class Detector:
     def __init__(self, config: Config, bans: BanManager, alerts: AlertTracker):
@@ -460,7 +678,7 @@ class Detector:
         self._total_bans = 0
         self._started = datetime.now(timezone.utc)
 
-    async def record(self, ip: str, source_id: str, source_name: str, url: str = "", pattern: str = ""):
+    async def record(self, ip, source_id, source_name, url="", pattern=""):
         if self.config.is_whitelisted(ip):
             return
         now = datetime.now(timezone.utc)
@@ -474,28 +692,25 @@ class Detector:
         banned_now = False
 
         if len(dq) >= self.config.max_attempts and not self.bans.is_banned(ip):
-            ok = await self.bans.ban(
-                ip, reason="auto", attempts=len(dq), source=source_id
-            )
+            ok = await self.bans.ban(ip, reason="auto", attempts=len(dq), source=source_id)
             if ok:
                 self._total_bans += 1
                 banned_now = True
                 dq.clear()
 
         self._events.appendleft({
-            "time": now.isoformat(),
-            "ip": ip,
-            "source_id": source_id,
-            "source_name": source_name,
-            "url": url,
-            "pattern": pattern,
+            "time": now.isoformat(), "ip": ip,
+            "source_id": source_id, "source_name": source_name,
+            "url": url, "pattern": pattern,
             "count": len(dq) if not banned_now else self.config.max_attempts,
             "banned": banned_now,
         })
         log.warning(
             "Failed login from %s via %s (%d/%d)%s",
-            ip, source_name, len(dq) if not banned_now else self.config.max_attempts,
-            self.config.max_attempts, " — BANNED" if banned_now else "",
+            ip, source_name,
+            len(dq) if not banned_now else self.config.max_attempts,
+            self.config.max_attempts,
+            " — BANNED" if banned_now else "",
         )
 
     def stats(self) -> dict:
@@ -514,7 +729,7 @@ class Detector:
 
 
 # ---------------------------------------------------------------------------
-# Log Scanner — tails files + polls addon logs
+# Log Scanner — tails files + polls addon docker logs
 # ---------------------------------------------------------------------------
 class LogScanner:
     def __init__(self, source_mgr: SourceManager, detector: Detector):
@@ -524,21 +739,18 @@ class LogScanner:
         self._addon_state: dict = {}  # slug -> last_length
 
     async def run(self):
-        # Initial discovery
         await self.source_mgr.discover()
-
-        log.info("Log scanner started — %d source(s) enabled",
-                 len(self.source_mgr.get_enabled()))
+        enabled = self.source_mgr.get_enabled()
+        log.info("Log scanner started — %d source(s) enabled out of %d total",
+                 len(enabled), len(self.source_mgr.get_all()))
+        for s in enabled:
+            log.info("  Active: %s (%s)", s.get("name"), s.get("path", s.get("slug", "")))
 
         while True:
-            # Scan enabled file sources
             for src in self.source_mgr.get_enabled("file"):
                 await self._scan_file(src)
-
-            # Poll enabled addon sources
             for src in self.source_mgr.get_enabled("addon"):
                 await self._poll_addon(src)
-
             await asyncio.sleep(1)
 
     async def _scan_file(self, src: dict):
@@ -551,12 +763,10 @@ class LogScanner:
             state = self._file_state.get(path)
 
             if state is None:
-                # First time — seek to end
                 self._file_state[path] = {"inode": inode, "pos": size}
                 return
 
             if inode != state["inode"] or size < state["pos"]:
-                # File rotated
                 state["inode"] = inode
                 state["pos"] = 0
                 log.info("Log rotated: %s", path)
@@ -564,7 +774,7 @@ class LogScanner:
             if state["pos"] >= size:
                 return
 
-            with open(path) as f:
+            with open(path, errors="replace") as f:
                 f.seek(state["pos"])
                 for line in f:
                     await self._process_line(line, src)
@@ -590,14 +800,10 @@ class LogScanner:
 
             last_len = self._addon_state.get(slug)
             if last_len is None:
-                # First poll — skip existing logs
                 self._addon_state[slug] = len(text)
                 return
-
             if len(text) < last_len:
-                # Logs were cleared/rotated
                 last_len = 0
-
             if len(text) > last_len:
                 new_content = text[last_len:]
                 for line in new_content.splitlines():
@@ -616,15 +822,12 @@ class LogScanner:
         if um:
             url = um.group(1)
         await self.detector.record(
-            ip=ip,
-            source_id=src["id"],
+            ip=ip, source_id=src["id"],
             source_name=src.get("name", src["id"]),
-            url=url,
-            pattern=pattern_name,
+            url=url, pattern=pattern_name,
         )
 
     async def rediscover_loop(self):
-        """Re-discover sources every 5 minutes."""
         while True:
             await asyncio.sleep(300)
             await self.source_mgr.discover()
@@ -646,20 +849,17 @@ def _index_html() -> str:
 def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
     app = web.Application()
 
-    # --- HTML ---
     async def handle_index(req):
         base = req.headers.get("X-Ingress-Path", "").rstrip("/") + "/"
         html = _index_html().replace("__BASE_HREF__", base)
         return web.Response(text=html, content_type="text/html")
 
-    # --- Stats / Events ---
     async def handle_stats(req):
         return web.json_response(detector.stats())
 
     async def handle_events(req):
         return web.json_response(detector.events())
 
-    # --- Bans ---
     async def handle_get_bans(req):
         return web.json_response(bans.list_bans())
 
@@ -684,7 +884,6 @@ def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "not found"}, status=404)
 
-    # --- Whitelist ---
     async def handle_get_whitelist(req):
         return web.json_response(config.whitelist)
 
@@ -693,19 +892,20 @@ def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
         entry = d.get("entry", "").strip()
         if not entry:
             return web.json_response({"ok": False, "error": "empty entry"}, status=400)
-        if entry not in config.whitelist:
-            config.whitelist.append(entry)
-            config.save()
+        wl = list(config.whitelist)
+        if entry not in wl:
+            wl.append(entry)
+            config.whitelist = wl
         return web.json_response({"ok": True})
 
     async def handle_delete_whitelist(req):
         entry = req.match_info["entry"]
-        if entry in config.whitelist:
-            config.whitelist.remove(entry)
-            config.save()
+        wl = list(config.whitelist)
+        if entry in wl:
+            wl.remove(entry)
+            config.whitelist = wl
         return web.json_response({"ok": True})
 
-    # --- Log Sources ---
     async def handle_get_sources(req):
         return web.json_response(source_mgr.get_all())
 
@@ -722,11 +922,9 @@ def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
         await source_mgr.discover()
         return web.json_response({"ok": True, "sources": source_mgr.get_all()})
 
-    # --- Alerts ---
     async def handle_get_alerts(req):
         return web.json_response(alerts.get_alerts())
 
-    # --- Config ---
     async def handle_get_config(req):
         return web.json_response(config.to_dict())
 
@@ -772,7 +970,8 @@ def build_app(config, bans, detector, source_mgr, alerts) -> web.Application:
 # Entry point
 # ---------------------------------------------------------------------------
 async def main():
-    config = Config()
+    state = PersistentState()
+    config = Config(state)
     bans = BanManager(config)
     alert_tracker = AlertTracker(config)
     detector = Detector(config, bans, alert_tracker)

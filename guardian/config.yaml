@@ -1,5 +1,5 @@
 name: "HA Guardian"
-version: "1.1.0"
+version: "1.2.0"
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs"
 url: "https://github.com/gregorwolf1973/ha-guardian"
@@ -21,6 +21,12 @@ panel_title: Guardian
 map:
   - type: config
     read_only: false
+  - type: all_addon_configs
+    read_only: true
+  - type: share
+    read_only: true
+  - type: media
+    read_only: true
 options:
   max_attempts: 5
   window_minutes: 5
