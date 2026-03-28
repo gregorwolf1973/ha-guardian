@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 PORT = 8099
 
 # Directories to scan for log files
@@ -46,6 +46,10 @@ LOG_SKIP_PATTERNS = [
     "*/tmp/*",
     "*/__pycache__/*",
     "*/venv/*",
+    # /config/addons_config is a duplicate of /addon_configs — skip it
+    "/config/addons_config/*",
+    "/config/addons_config",
+    "*/addons_config/*",
 ]
 
 # Max depth for recursive scanning
@@ -99,6 +103,34 @@ PATTERNS = {
     "dovecot_postfix": re.compile(
         r"(?:auth failed|authentication failure|SASL .+ authentication failed)"
         r".*?(?:rip=|from=\[?)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        re.IGNORECASE,
+    ),
+    # Laravel apps (2FAuth, Heimdall, etc.) — matches both failed and throttled
+    # Format: [date] level.LEVEL: Message from IP
+    "laravel_auth": re.compile(
+        r"production\.(?:WARNING|NOTICE|ERROR|INFO)"
+        r".*?(?:Failed login|failed to authenticate|login attempt|"
+        r"Invalid (?:password|credentials|OTP)|throttle|too many (?:attempts|login)|"
+        r"blocked|locked out|User authentication failed|"
+        r"These credentials do not match)"
+        r".*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        re.IGNORECASE,
+    ),
+    # Broader Laravel: any line with IP + auth failure keywords (reverse order)
+    "laravel_ip_first": re.compile(
+        r"from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+        r".*?(?:fail|invalid|wrong|denied|throttl|locked|block|credentials do not match)",
+        re.IGNORECASE,
+    ),
+    # 2FAuth specific: "User login requested" is logged for EVERY attempt;
+    # failed ones are followed by throttle/error. Catch the request line.
+    # This is intentionally broad — matches all login requests to catch
+    # failed ones. Combine with max_attempts threshold for auto-ban.
+    "2fauth_login": re.compile(
+        r"production\.(?:WARNING|NOTICE|ERROR)"
+        r".*?(?:Failed|failed|Invalid|invalid|Throttle|throttle|"
+        r"credentials do not match|Too many)"
+        r".*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
         re.IGNORECASE,
     ),
 }
@@ -488,14 +520,35 @@ class SourceManager:
         # Fetch addon name mapping first (used for both file naming and docker logs)
         addon_map = await self._fetch_addon_map()
 
-        # Remove stale file sources (file no longer exists or too old)
-        stale = [
-            sid for sid, s in self._sources.items()
-            if s["type"] == "file" and not Path(s.get("path", "")).exists()
-        ]
+        # Remove stale file sources: doesn't exist, too old, or duplicate path
+        now_ts = datetime.now().timestamp()
+        age_cutoff = now_ts - (MAX_LOG_AGE_HOURS * 3600) if MAX_LOG_AGE_HOURS > 0 else 0
+        stale = []
+        for sid, s in self._sources.items():
+            if s["type"] != "file":
+                continue
+            path = s.get("path", "")
+            p = Path(path)
+            # Remove if file doesn't exist
+            if not p.exists():
+                stale.append(sid)
+                continue
+            # Remove if in a duplicate mount path (addons_config inside /config)
+            if _should_skip(path):
+                stale.append(sid)
+                continue
+            # Remove if file is too old
+            try:
+                mtime = p.stat().st_mtime
+                if age_cutoff > 0 and mtime < age_cutoff:
+                    stale.append(sid)
+                    continue
+            except OSError:
+                stale.append(sid)
         for sid in stale:
+            name = self._sources[sid].get("name", sid)
             del self._sources[sid]
-            log.info("Removed stale source: %s", sid)
+            log.info("Removed stale/duplicate source: %s", name)
 
         # 1) Scan all mapped directories for recent log files (recursive)
         for base_dir in LOG_SCAN_DIRS:
