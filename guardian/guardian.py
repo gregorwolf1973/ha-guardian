@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 PORT = 8099
 
 # Directories to scan for log files
@@ -38,26 +38,24 @@ LOG_SCAN_DIRS = [
     "/media",
 ]
 
-# Common log file patterns (glob-style, matched recursively)
-LOG_FILE_PATTERNS = [
-    "*.log",
-    "*.log.*",
-    "*/logs/*.log",
-    "*/log/*.log",
-    "*/log/*.txt",
-    "*/data/*.log",
-]
-
 # Skip these paths during discovery to avoid noise
 LOG_SKIP_PATTERNS = [
     "*/node_modules/*",
     "*/.git/*",
     "*/cache/*",
     "*/tmp/*",
+    "*/__pycache__/*",
+    "*/venv/*",
 ]
 
 # Max depth for recursive scanning
 MAX_SCAN_DEPTH = 4
+
+# Only show log files modified within this many hours (0 = show all)
+MAX_LOG_AGE_HOURS = 48
+
+# Skip rotated log files (e.g. .log.1, .log.2, .log.gz)
+ROTATED_LOG_RE = re.compile(r"\.log\.\d+$|\.log\.gz$|\.log\.bz2$|\.log\.xz$|\.log\.old$")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -302,11 +300,18 @@ def _should_skip(path: str) -> bool:
 
 
 def _scan_directory_for_logs(base_dir: str, max_depth: int = MAX_SCAN_DEPTH) -> list:
-    """Recursively scan a directory for log files."""
+    """Recursively scan a directory for recent, non-rotated log files.
+
+    Returns list of dicts: {"path": str, "mtime": float, "size": int}
+    """
     found = []
     base = Path(base_dir)
     if not base.is_dir():
         return found
+
+    now = datetime.now().timestamp()
+    age_cutoff = now - (MAX_LOG_AGE_HOURS * 3600) if MAX_LOG_AGE_HOURS > 0 else 0
+
     try:
         for item in base.iterdir():
             path_str = str(item)
@@ -314,16 +319,30 @@ def _scan_directory_for_logs(base_dir: str, max_depth: int = MAX_SCAN_DEPTH) -> 
                 continue
             if item.is_file():
                 name_lower = item.name.lower()
-                if (name_lower.endswith(".log")
-                        or name_lower.endswith(".log.1")
-                        or name_lower.endswith(".log.txt")
-                        or (name_lower.endswith(".txt") and "log" in name_lower)):
-                    # Skip tiny or empty files
-                    try:
-                        if item.stat().st_size > 0:
-                            found.append(path_str)
-                    except OSError:
-                        pass
+                # Only .log files (not rotated ones like .log.1, .log.gz)
+                if not name_lower.endswith(".log"):
+                    # Also allow .log.txt or files with "log" in .txt name
+                    if not (name_lower.endswith(".log.txt")
+                            or (name_lower.endswith(".txt") and "log" in name_lower)):
+                        continue
+                # Skip rotated logs
+                if ROTATED_LOG_RE.search(item.name):
+                    continue
+                try:
+                    st = item.stat()
+                    # Skip empty files
+                    if st.st_size == 0:
+                        continue
+                    # Skip files older than cutoff
+                    if age_cutoff > 0 and st.st_mtime < age_cutoff:
+                        continue
+                    found.append({
+                        "path": path_str,
+                        "mtime": st.st_mtime,
+                        "size": st.st_size,
+                    })
+                except OSError:
+                    pass
             elif item.is_dir() and max_depth > 0:
                 found.extend(_scan_directory_for_logs(path_str, max_depth - 1))
     except PermissionError:
@@ -333,17 +352,35 @@ def _scan_directory_for_logs(base_dir: str, max_depth: int = MAX_SCAN_DEPTH) -> 
     return found
 
 
-def _friendly_name(path: str) -> str:
-    """Generate a human-readable name from a log file path."""
+def _extract_addon_slug_from_path(path: str) -> Optional[str]:
+    """Extract the addon slug from an addon_configs path."""
     p = Path(path)
     parts = p.parts
-    # For addon_configs, use the addon dir name
-    if "/addon_configs/" in path and len(parts) >= 3:
-        addon_dir = parts[parts.index("addon_configs") + 1] if "addon_configs" in parts else ""
-        # Clean up slug: "a0d7b954_nextcloud" -> "Nextcloud"
-        name = addon_dir.split("_", 1)[-1] if "_" in addon_dir else addon_dir
+    if "addon_configs" in parts:
+        idx = parts.index("addon_configs")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return None
+
+
+def _friendly_name(path: str, addon_names: dict = None) -> str:
+    """Generate a human-readable name from a log file path.
+
+    addon_names: mapping of addon dir slug -> display name from Supervisor API
+    """
+    p = Path(path)
+    addon_names = addon_names or {}
+
+    # For addon_configs, use the real addon name if available
+    slug = _extract_addon_slug_from_path(path)
+    if slug:
+        if slug in addon_names:
+            return f"{addon_names[slug]}: {p.name}"
+        # Fallback: clean up slug
+        name = slug.split("_", 1)[-1] if "_" in slug else slug
         name = name.replace("-", " ").replace("_", " ").title()
         return f"{name}: {p.name}"
+
     # For share/media, include parent dir
     stem = p.stem.replace("-", " ").replace("_", " ").title()
     parent = p.parent.name
@@ -352,6 +389,10 @@ def _friendly_name(path: str) -> str:
         parent_clean = parent_clean.replace("-", " ").replace("_", " ").title()
         return f"{parent_clean}: {stem}"
     return stem
+
+
+def _format_mtime(mtime: float) -> str:
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
 
 
 class SourceManager:
@@ -397,74 +438,128 @@ class SourceManager:
         except Exception as e:
             log.error("Could not save sources: %s", e)
 
+    async def _fetch_addon_map(self) -> dict:
+        """Fetch addon slug -> display name mapping from Supervisor API.
+        Returns {slug: name} for all installed addons.
+        """
+        addon_map = {}  # slug -> name
+        addon_states = {}  # slug -> state
+        if not self._supervisor_token:
+            return addon_map
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {self._supervisor_token}",
+                    "Content-Type": "application/json",
+                }
+                async with session.get(
+                    f"{SUPERVISOR_URL}/addons",
+                    headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for addon in data.get("data", {}).get("addons", []):
+                            slug = addon.get("slug", "")
+                            addon_map[slug] = addon.get("name", slug)
+                            addon_states[slug] = addon.get("state", "")
+        except Exception as e:
+            log.warning("Could not fetch addon list: %s", e)
+        self._addon_states = addon_states
+        return addon_map
+
     async def discover(self):
-        """Discover log files in all mapped directories + addon logs via API."""
+        """Discover log files in all mapped directories + addon docker logs."""
         discovered = 0
 
-        # 1) Scan all mapped directories for log files (recursive)
+        # Fetch addon name mapping first (used for both file naming and docker logs)
+        addon_map = await self._fetch_addon_map()
+
+        # Remove stale file sources (file no longer exists or too old)
+        stale = [
+            sid for sid, s in self._sources.items()
+            if s["type"] == "file" and not Path(s.get("path", "")).exists()
+        ]
+        for sid in stale:
+            del self._sources[sid]
+            log.info("Removed stale source: %s", sid)
+
+        # 1) Scan all mapped directories for recent log files (recursive)
         for base_dir in LOG_SCAN_DIRS:
-            for path in _scan_directory_for_logs(base_dir):
+            for entry in _scan_directory_for_logs(base_dir):
+                path = entry["path"]
                 sid = "file:" + path
-                if sid not in self._sources:
-                    name = _friendly_name(path)
-                    # Auto-enable the main HA log, everything else off by default
-                    enabled = (path == self.config.log_file)
-                    self._sources[sid] = {
-                        "id": sid,
-                        "name": name,
-                        "type": "file",
-                        "path": path,
-                        "enabled": enabled,
-                    }
-                    discovered += 1
-                    log.info("Discovered log: %s (%s)", name, path)
+                mtime_iso = _format_mtime(entry["mtime"])
+                size = entry["size"]
+
+                if sid in self._sources:
+                    # Update mtime and size for existing sources
+                    self._sources[sid]["last_modified"] = mtime_iso
+                    self._sources[sid]["size"] = size
+                    # Update name if addon_map has better info
+                    slug = _extract_addon_slug_from_path(path)
+                    if slug and slug in addon_map:
+                        self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
+                        self._sources[sid]["addon_slug"] = slug
+                    continue
+
+                name = _friendly_name(path, addon_map)
+                enabled = (path == self.config.log_file)
+
+                source_entry = {
+                    "id": sid,
+                    "name": name,
+                    "type": "file",
+                    "path": path,
+                    "enabled": enabled,
+                    "last_modified": mtime_iso,
+                    "size": size,
+                }
+                # Link to addon if in addon_configs
+                slug = _extract_addon_slug_from_path(path)
+                if slug:
+                    source_entry["addon_slug"] = slug
+
+                self._sources[sid] = source_entry
+                discovered += 1
+                log.info("Discovered log: %s (%s, modified %s)", name, path, mtime_iso)
 
         # 2) Discover HA addon docker logs via Supervisor API
-        if self._supervisor_token:
-            try:
-                async with aiohttp_client.ClientSession() as session:
-                    headers = {
-                        "Authorization": f"Bearer {self._supervisor_token}",
-                        "Content-Type": "application/json",
-                    }
-                    async with session.get(
-                        f"{SUPERVISOR_URL}/addons",
-                        headers=headers,
-                        timeout=aiohttp_client.ClientTimeout(total=10),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            addons = data.get("data", {}).get("addons", [])
-                            for addon in addons:
-                                slug = addon.get("slug", "")
-                                state = addon.get("state", "")
-                                name = addon.get("name", slug)
-                                if "ha_guardian" in slug:
-                                    continue
-                                sid = "addon:" + slug
-                                if sid not in self._sources:
-                                    self._sources[sid] = {
-                                        "id": sid,
-                                        "name": f"Docker: {name}",
-                                        "type": "addon",
-                                        "slug": slug,
-                                        "state": state,
-                                        "enabled": False,
-                                    }
-                                    discovered += 1
-                                    log.info("Discovered addon: %s (%s)", name, slug)
-                                else:
-                                    self._sources[sid]["state"] = state
-                                    self._sources[sid]["name"] = f"Docker: {name}"
-            except Exception as e:
-                log.warning("Could not discover addons: %s", e)
+        for slug, display_name in addon_map.items():
+            if "ha_guardian" in slug:
+                continue
+            sid = "addon:" + slug
+            state = getattr(self, "_addon_states", {}).get(slug, "")
+            if sid not in self._sources:
+                self._sources[sid] = {
+                    "id": sid,
+                    "name": f"Docker: {display_name}",
+                    "type": "addon",
+                    "slug": slug,
+                    "state": state,
+                    "enabled": False,
+                }
+                discovered += 1
+                log.info("Discovered addon docker log: %s (%s)", display_name, slug)
+            else:
+                self._sources[sid]["state"] = state
+                self._sources[sid]["name"] = f"Docker: {display_name}"
 
         if discovered:
-            log.info("Discovered %d new log source(s) — total: %d", discovered, len(self._sources))
+            log.info("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
         self._save()
 
     def get_all(self) -> list:
-        return sorted(self._sources.values(), key=lambda s: (not s.get("enabled"), s.get("name", "")))
+        # Sort: enabled first, then by last_modified (most recent first), then by name
+        return sorted(
+            self._sources.values(),
+            key=lambda s: (
+                not s.get("enabled"),
+                -(datetime.fromisoformat(s["last_modified"]).timestamp()
+                  if s.get("last_modified") else 0),
+                s.get("name", ""),
+            ),
+        )
 
     def get_enabled(self, source_type: Optional[str] = None) -> list:
         return [

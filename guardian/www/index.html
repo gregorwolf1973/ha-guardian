@@ -189,7 +189,7 @@
   <div class="header-left">
     <span class="header-icon">🛡️</span>
     <h1>HA Guardian</h1>
-    <span class="version-badge" id="ver">v1.1.0</span>
+    <span class="version-badge" id="ver">v1.3.0</span>
   </div>
   <div>
     <span class="status-dot" id="statusDot"></span>
@@ -291,10 +291,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Enabled</th><th>Name</th><th>Type</th><th>Path / Slug</th><th>Status</th></tr>
+        <tr><th>Enabled</th><th>Name</th><th>Type</th><th>Path / Slug</th><th>Last Modified</th><th>Size</th><th>Status</th></tr>
       </thead>
       <tbody id="sourcesTable">
-        <tr class="empty-row"><td colspan="5">No sources discovered</td></tr>
+        <tr class="empty-row"><td colspan="7">No sources discovered</td></tr>
       </tbody>
     </table>
   </div>
@@ -446,6 +446,11 @@ function fmtUptime(s) {
   if (s < 60) return s + 's'; if (s < 3600) return Math.floor(s/60) + 'm';
   if (s < 86400) return Math.floor(s/3600) + 'h'; return Math.floor(s/86400) + 'd';
 }
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
 
 // ---- Stats ----
 async function loadStats() {
@@ -522,15 +527,17 @@ async function loadSources() {
   try {
     const sources = await api('GET', 'api/sources');
     const tb = document.getElementById('sourcesTable');
-    if (!sources.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="5">No sources discovered</td></tr>'; return; }
+    if (!sources.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No sources discovered</td></tr>'; return; }
     tb.innerHTML = sources.map(s => {
       const detail = s.type === 'file' ? esc(s.path || '') : esc(s.slug || '');
       const typeLabel = s.type === 'file'
         ? '<span class="badge badge-muted">File</span>'
-        : '<span class="badge badge-info">Addon</span>';
+        : '<span class="badge badge-info">Docker</span>';
       const stateLabel = s.state
         ? (s.state === 'started' ? '<span class="badge badge-success">Running</span>' : '<span class="badge badge-muted">' + esc(s.state) + '</span>')
-        : '<span class="badge badge-success">Local</span>';
+        : (s.last_modified ? '<span class="badge badge-success">Active</span>' : '');
+      const lastMod = s.last_modified ? relTime(s.last_modified) : '–';
+      const size = s.size ? fmtSize(s.size) : '–';
       return `<tr>
         <td>
           <label class="toggle">
@@ -540,7 +547,9 @@ async function loadSources() {
         </td>
         <td>${esc(s.name)}</td>
         <td>${typeLabel}</td>
-        <td class="mono" style="font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis">${detail}</td>
+        <td class="mono" style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.path || s.slug || '')}">${detail}</td>
+        <td class="countdown">${lastMod}</td>
+        <td style="font-size:12px">${size}</td>
         <td>${stateLabel}</td>
       </tr>`;
     }).join('');
