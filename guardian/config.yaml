@@ -1,0 +1,37 @@
+name: "HA Guardian"
+version: "1.0.0"
+slug: "ha_guardian"
+description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs"
+url: "https://github.com/gregorwolf1973/ha-guardian"
+arch:
+  - amd64
+  - aarch64
+  - armv7
+  - armhf
+  - i386
+startup: services
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:shield-lock
+panel_title: Guardian
+map:
+  - type: config
+    read_only: false
+options:
+  max_attempts: 5
+  window_minutes: 5
+  ban_duration_minutes: 240
+  log_file: "/config/home-assistant.log"
+  whitelist: []
+  trusted_domains: []
+schema:
+  max_attempts: "int(1,100)"
+  window_minutes: "int(1,60)"
+  ban_duration_minutes: "int(0,43200)"
+  log_file: str
+  whitelist:
+    - "str?"
+  trusted_domains:
+    - "str?"
