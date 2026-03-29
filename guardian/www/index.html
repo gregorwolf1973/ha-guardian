@@ -669,7 +669,7 @@ async function addWhitelist() {
   catch (e) { toast(e.message, 'err'); }
 }
 async function removeWhitelist(entry) {
-  try { await api('DELETE', 'api/whitelist/' + encodeURIComponent(entry)); toast(entry + ' removed', 'ok'); loadWhitelist(); }
+  try { await api('POST', 'api/whitelist/delete', { entry }); toast(entry + ' removed', 'ok'); loadWhitelist(); }
   catch (e) { toast(e.message, 'err'); }
 }
 

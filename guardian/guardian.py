@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 PORT = 8099
 
 # Directories to scan for log files
@@ -1296,12 +1296,18 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
         return web.json_response({"ok": True})
 
     async def handle_delete_whitelist(req):
-        entry = req.match_info["entry"]
+        # Support both path param and JSON body (CIDR entries contain '/')
+        try:
+            d = await req.json()
+            entry = d.get("entry", "").strip()
+        except Exception:
+            entry = req.match_info.get("entry", "")
         wl = list(config.whitelist)
         if entry in wl:
             wl.remove(entry)
             config.whitelist = wl
-        return web.json_response({"ok": True})
+            return web.json_response({"ok": True})
+        return web.json_response({"ok": False, "error": "not found"}, status=404)
 
     async def handle_get_sources(req):
         return web.json_response(source_mgr.get_all())
@@ -1388,6 +1394,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
     app.router.add_get("/api/whitelist", handle_get_whitelist)
     app.router.add_post("/api/whitelist", handle_post_whitelist)
     app.router.add_delete("/api/whitelist/{entry}", handle_delete_whitelist)
+    app.router.add_post("/api/whitelist/delete", handle_delete_whitelist)
     app.router.add_get("/api/sources", handle_get_sources)
     app.router.add_post("/api/sources/toggle", handle_toggle_source)
     app.router.add_post("/api/sources/discover", handle_discover_sources)
