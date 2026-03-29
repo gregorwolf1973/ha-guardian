@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -126,6 +126,12 @@ PATTERNS = {
     "2fauth_login": re.compile(
         r"production\.INFO:.*User login requested.*from\s+"
         r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        re.IGNORECASE,
+    ),
+    # HA Core: "Login attempt or request with invalid authentication from host (IP)"
+    "ha_core_invalid_auth": re.compile(
+        r"(?:Login attempt|invalid authentication)"
+        r".*?\((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)",
         re.IGNORECASE,
     ),
     # HTTP access log: POST to login URLs with 4xx/5xx status (nginx/apache).
@@ -652,6 +658,26 @@ class SourceManager:
             else:
                 self._sources[sid]["state"] = state
                 self._sources[sid]["name"] = f"Docker: {display_name}"
+                # Auto-enable if addon has other enabled sources but this docker source is off
+                if not self._sources[sid].get("enabled") and self._is_addon_enabled(slug):
+                    self._sources[sid]["enabled"] = True
+                    log.info("Auto-enabled existing docker source: %s (%s)", display_name, slug)
+
+        # 3) Add HA Core log as a special docker-like source (polls /core/logs)
+        core_sid = "addon:core"
+        if core_sid not in self._sources:
+            self._sources[core_sid] = {
+                "id": core_sid,
+                "name": "Docker: Home Assistant Core",
+                "type": "addon",
+                "slug": "core",
+                "state": "started",
+                "enabled": True,  # Always enabled by default
+            }
+            discovered += 1
+            log.info("Added HA Core log source (polls /core/logs via Supervisor API)")
+        else:
+            self._sources[core_sid]["state"] = "started"
 
         if discovered:
             log.info("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
@@ -717,6 +743,9 @@ class SourceManager:
             addon_id = None
             if src["type"] == "addon":
                 addon_id = src.get("slug", "")
+                # Map the special "core" docker source to __core__ group
+                if addon_id == "core":
+                    addon_id = "__core__"
             elif src["type"] == "file":
                 addon_id = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
                 # Update addon_slug on the source if we found one
@@ -805,6 +834,9 @@ class SourceManager:
             src_addon = None
             if src["type"] == "addon":
                 src_addon = src.get("slug", "")
+                # Map "core" docker source to __core__ group
+                if src_addon == "core":
+                    src_addon = "__core__"
             elif src["type"] == "file":
                 if addon_id == "__core__" and src.get("path") == self.config.log_file:
                     src_addon = "__core__"
@@ -829,6 +861,8 @@ class SourceManager:
             src_addon = None
             if src["type"] == "addon":
                 src_addon = src.get("slug", "")
+                if src_addon == "core":
+                    src_addon = "__core__"
             elif src["type"] == "file":
                 if addon_id == "__core__" and src.get("path") == self.config.log_file:
                     src_addon = "__core__"
@@ -1205,7 +1239,11 @@ class LogScanner:
         try:
             async with aiohttp_client.ClientSession() as session:
                 headers = {"Authorization": f"Bearer {token}"}
-                url = f"{SUPERVISOR_URL}/addons/{slug}/logs"
+                # HA Core uses /core/logs, addons use /addons/{slug}/logs
+                if slug == "core":
+                    url = f"{SUPERVISOR_URL}/core/logs"
+                else:
+                    url = f"{SUPERVISOR_URL}/addons/{slug}/logs"
                 async with session.get(
                     url, headers=headers, timeout=aiohttp_client.ClientTimeout(total=10)
                 ) as resp:
