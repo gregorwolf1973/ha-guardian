@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 PORT = 8099
 
 # Directories to scan for log files
@@ -582,7 +582,11 @@ class SourceManager:
                     continue
 
                 name = _friendly_name(path, addon_map)
+                # Auto-enable if it's the HA core log or belongs to an already-enabled addon
+                slug = _extract_addon_slug_from_path(path)
                 enabled = (path == self.config.log_file)
+                if not enabled and slug:
+                    enabled = self._is_addon_enabled(slug)
 
                 source_entry = {
                     "id": sid,
@@ -593,8 +597,6 @@ class SourceManager:
                     "last_modified": mtime_iso,
                     "size": size,
                 }
-                # Link to addon if in addon_configs
-                slug = _extract_addon_slug_from_path(path)
                 if slug:
                     source_entry["addon_slug"] = slug
 
@@ -609,16 +611,19 @@ class SourceManager:
             sid = "addon:" + slug
             state = getattr(self, "_addon_states", {}).get(slug, "")
             if sid not in self._sources:
+                # Auto-enable if addon already has enabled file sources
+                enabled = self._is_addon_enabled(slug)
                 self._sources[sid] = {
                     "id": sid,
                     "name": f"Docker: {display_name}",
                     "type": "addon",
                     "slug": slug,
                     "state": state,
-                    "enabled": False,
+                    "enabled": enabled,
                 }
                 discovered += 1
-                log.info("Discovered addon docker log: %s (%s)", display_name, slug)
+                log.info("Discovered addon docker log: %s (%s)%s",
+                         display_name, slug, " [auto-enabled]" if enabled else "")
             else:
                 self._sources[sid]["state"] = state
                 self._sources[sid]["name"] = f"Docker: {display_name}"
@@ -626,6 +631,19 @@ class SourceManager:
         if discovered:
             log.info("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
         self._save()
+
+    def _is_addon_enabled(self, addon_slug: str) -> bool:
+        """Check if any source belonging to this addon is already enabled."""
+        for src in self._sources.values():
+            if not src.get("enabled"):
+                continue
+            if src["type"] == "addon" and src.get("slug") == addon_slug:
+                return True
+            if src["type"] == "file":
+                s = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+                if s == addon_slug:
+                    return True
+        return False
 
     def _refresh_file_mtimes(self):
         """Re-read mtime and size from disk for all file sources."""
