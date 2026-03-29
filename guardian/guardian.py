@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.5.0"
+VERSION = "1.7.0"
 PORT = 8099
 
 # Directories to scan for log files
@@ -122,15 +122,18 @@ PATTERNS = {
         r".*?(?:fail|invalid|wrong|denied|throttl|locked|block|credentials do not match)",
         re.IGNORECASE,
     ),
-    # 2FAuth specific: "User login requested" is logged for EVERY attempt;
-    # failed ones are followed by throttle/error. Catch the request line.
-    # This is intentionally broad — matches all login requests to catch
-    # failed ones. Combine with max_attempts threshold for auto-ban.
+    # 2FAuth / Laravel: "User login requested" in laravel.log (for file sources)
     "2fauth_login": re.compile(
-        r"production\.(?:WARNING|NOTICE|ERROR)"
-        r".*?(?:Failed|failed|Invalid|invalid|Throttle|throttle|"
-        r"credentials do not match|Too many)"
-        r".*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        r"production\.INFO:.*User login requested.*from\s+"
+        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        re.IGNORECASE,
+    ),
+    # HTTP access log: POST to login URLs with 4xx/5xx status (nginx/apache).
+    # Catches 2FAuth (POST /user/login → 500), and other web apps.
+    "http_login_fail": re.compile(
+        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+        r'.*"POST\s+\S*(?:/login|/signin|/sign_in|/auth|/user/login|/api/v\d+/auth)'
+        r'\s+HTTP/\S+"\s+(?:4[0-9]{2}|5[0-9]{2})\s',
         re.IGNORECASE,
     ),
 }
@@ -397,14 +400,22 @@ def _scan_directory_for_logs(base_dir: str, max_depth: int = MAX_SCAN_DEPTH) -> 
     return found
 
 
+STARTUP_LOG_RE = re.compile(r"^addon_([a-z0-9_]+?)(?:\.log|_\w+\.log)$", re.IGNORECASE)
+
+
 def _extract_addon_slug_from_path(path: str) -> Optional[str]:
-    """Extract the addon slug from an addon_configs path."""
+    """Extract the addon slug from addon_configs path or startup log filename."""
     p = Path(path)
     parts = p.parts
+    # /addon_configs/{slug}/... paths
     if "addon_configs" in parts:
         idx = parts.index("addon_configs")
         if idx + 1 < len(parts):
             return parts[idx + 1]
+    # /config/startup/logs/addon_{slug}.log or /config/logs/addon_{slug}.log
+    m = STARTUP_LOG_RE.match(p.name)
+    if m:
+        return m.group(1)
     return None
 
 
@@ -562,11 +573,12 @@ class SourceManager:
                     # Update mtime and size for existing sources
                     self._sources[sid]["last_modified"] = mtime_iso
                     self._sources[sid]["size"] = size
-                    # Update name if addon_map has better info
+                    # Update addon_slug and name if addon_map has better info
                     slug = _extract_addon_slug_from_path(path)
-                    if slug and slug in addon_map:
-                        self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
+                    if slug:
                         self._sources[sid]["addon_slug"] = slug
+                        if slug in addon_map:
+                            self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
                     continue
 
                 name = _friendly_name(path, addon_map)
@@ -615,8 +627,19 @@ class SourceManager:
             log.info("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
         self._save()
 
+    def _refresh_file_mtimes(self):
+        """Re-read mtime and size from disk for all file sources."""
+        for src in self._sources.values():
+            if src.get("type") == "file":
+                try:
+                    st = os.stat(src.get("path", ""))
+                    src["last_modified"] = datetime.fromtimestamp(st.st_mtime).isoformat()
+                    src["size"] = st.st_size
+                except OSError:
+                    pass
+
     def get_all(self) -> list:
-        # Sort: enabled first, then by last_modified (most recent first), then by name
+        self._refresh_file_mtimes()
         return sorted(
             self._sources.values(),
             key=lambda s: (
@@ -639,6 +662,146 @@ class SourceManager:
             self._save()
             return True
         return False
+
+    def get_addons(self) -> list:
+        """Return addon-level grouped view. Each addon aggregates its sources."""
+        self._refresh_file_mtimes()
+
+        groups: dict = {}  # addon_id -> {name, sources, enabled, ...}
+
+        for src in self._sources.values():
+            # Determine which addon this source belongs to
+            addon_id = None
+            if src["type"] == "addon":
+                addon_id = src.get("slug", "")
+            elif src["type"] == "file":
+                addon_id = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+                # Update addon_slug on the source if we found one
+                if addon_id and not src.get("addon_slug"):
+                    src["addon_slug"] = addon_id
+
+            # HA core log: path matches config log_file and no addon slug
+            if not addon_id and src.get("path") == self.config.log_file:
+                addon_id = "__core__"
+
+            # Skip ungrouped sources (loose files not belonging to any addon)
+            if not addon_id:
+                continue
+
+            if addon_id not in groups:
+                groups[addon_id] = {
+                    "id": addon_id,
+                    "name": "",
+                    "state": "",
+                    "enabled": False,
+                    "source_count": 0,
+                    "file_count": 0,
+                    "docker_log": False,
+                    "last_modified": None,
+                    "total_size": 0,
+                    "sources": [],
+                }
+
+            g = groups[addon_id]
+            g["sources"].append(src["id"])
+            g["source_count"] += 1
+
+            if src.get("enabled"):
+                g["enabled"] = True
+
+            if src["type"] == "addon":
+                g["docker_log"] = True
+                g["state"] = src.get("state", "")
+                # Use addon docker name as the primary name
+                docker_name = src.get("name", "").replace("Docker: ", "")
+                if docker_name:
+                    g["name"] = docker_name
+            elif src["type"] == "file":
+                g["file_count"] += 1
+                g["total_size"] += src.get("size", 0)
+                # Track most recent modification
+                lm = src.get("last_modified")
+                if lm and (not g["last_modified"] or lm > g["last_modified"]):
+                    g["last_modified"] = lm
+
+            # Fallback name from file source if no docker name
+            if not g["name"]:
+                if addon_id == "__core__":
+                    g["name"] = "Home Assistant Core"
+                else:
+                    # Try to get clean name from the source name
+                    sname = src.get("name", addon_id)
+                    # Strip filename part like ": laravel-2026-03-27.log"
+                    if ": " in sname:
+                        sname = sname.split(": ")[0]
+                    g["name"] = sname
+
+        # Build result list
+        result = []
+        for addon_id, g in groups.items():
+            result.append({
+                "id": addon_id,
+                "name": g["name"],
+                "state": g["state"],
+                "enabled": g["enabled"],
+                "source_count": g["source_count"],
+                "file_count": g["file_count"],
+                "docker_log": g["docker_log"],
+                "last_modified": g["last_modified"],
+                "total_size": g["total_size"],
+            })
+
+        # Sort: enabled first, then by name
+        result.sort(key=lambda a: (not a["enabled"], a["name"].lower()))
+        return result
+
+    def toggle_addon(self, addon_id: str, enabled: bool) -> bool:
+        """Toggle all sources belonging to an addon on or off."""
+        found = False
+        for src in self._sources.values():
+            src_addon = None
+            if src["type"] == "addon":
+                src_addon = src.get("slug", "")
+            elif src["type"] == "file":
+                if addon_id == "__core__" and src.get("path") == self.config.log_file:
+                    src_addon = "__core__"
+                else:
+                    src_addon = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+            if src_addon == addon_id:
+                src["enabled"] = enabled
+                found = True
+        if found:
+            self._save()
+        return found
+
+    def preview_addon(self, addon_id: str) -> Optional[str]:
+        """Find the best source ID for previewing an addon's logs.
+        Prefers the most recently modified file, falls back to docker log.
+        """
+        best_file = None
+        best_mtime = ""
+        docker_id = None
+
+        for src in self._sources.values():
+            src_addon = None
+            if src["type"] == "addon":
+                src_addon = src.get("slug", "")
+            elif src["type"] == "file":
+                if addon_id == "__core__" and src.get("path") == self.config.log_file:
+                    src_addon = "__core__"
+                else:
+                    src_addon = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+            if src_addon != addon_id:
+                continue
+            if src["type"] == "addon":
+                docker_id = src["id"]
+            elif src["type"] == "file":
+                lm = src.get("last_modified", "")
+                if not best_file or lm > best_mtime:
+                    best_file = src["id"]
+                    best_mtime = lm
+
+        return best_file or docker_id
 
     def get_supervisor_token(self) -> str:
         return self._supervisor_token
@@ -1138,6 +1301,28 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
         await source_mgr.discover()
         return web.json_response({"ok": True, "sources": source_mgr.get_all()})
 
+    async def handle_get_addons(req):
+        return web.json_response(source_mgr.get_addons())
+
+    async def handle_toggle_addon(req):
+        d = await req.json()
+        addon_id = d.get("id", "")
+        enabled = bool(d.get("enabled", False))
+        ok = source_mgr.toggle_addon(addon_id, enabled)
+        if ok:
+            return web.json_response({"ok": True})
+        return web.json_response({"ok": False, "error": "addon not found"}, status=404)
+
+    async def handle_preview_addon(req):
+        d = await req.json()
+        addon_id = d.get("id", "")
+        n = min(int(d.get("lines", 100)), 200)
+        source_id = source_mgr.preview_addon(addon_id)
+        if not source_id:
+            return web.json_response({"lines": ["No log sources found for this addon"]})
+        lines = await source_mgr.preview_source(source_id, n)
+        return web.json_response({"lines": lines, "source_id": source_id})
+
     async def handle_get_alerts(req):
         return web.json_response(alerts.get_alerts())
 
@@ -1189,6 +1374,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
     app.router.add_post("/api/sources/toggle", handle_toggle_source)
     app.router.add_post("/api/sources/discover", handle_discover_sources)
     app.router.add_post("/api/sources/preview", handle_preview_source)
+    app.router.add_get("/api/addons", handle_get_addons)
+    app.router.add_post("/api/addons/toggle", handle_toggle_addon)
+    app.router.add_post("/api/addons/preview", handle_preview_addon)
     app.router.add_get("/api/unmatched", handle_unmatched)
     app.router.add_get("/api/alerts", handle_get_alerts)
     app.router.add_get("/api/config", handle_get_config)

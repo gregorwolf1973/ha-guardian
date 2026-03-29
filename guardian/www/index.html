@@ -219,7 +219,7 @@
 <div class="tabs" id="tabBar">
   <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
   <button class="tab-btn" data-tab="bans">Blocked IPs</button>
-  <button class="tab-btn" data-tab="sources">Log Sources</button>
+  <button class="tab-btn" data-tab="sources">Addons</button>
   <button class="tab-btn" data-tab="alerts">Alerts</button>
   <button class="tab-btn" data-tab="whitelist">Whitelist</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
@@ -280,22 +280,22 @@
   </div>
 </div>
 
-<!-- LOG SOURCES -->
+<!-- ADDONS -->
 <div id="tab-sources" class="tab-pane">
   <div class="section-header">
-    <h2>Monitored Log Sources</h2>
+    <h2>Monitored Addons</h2>
     <div style="display:flex;gap:6px">
-      <button class="btn btn-primary btn-sm" onclick="discoverSources()">Discover Sources</button>
+      <button class="btn btn-primary btn-sm" onclick="discoverSources()">Discover</button>
       <button class="btn btn-ghost btn-sm" onclick="loadSources()">↻ Refresh</button>
     </div>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Enabled</th><th>Name</th><th>Type</th><th>Path / Slug</th><th>Last Modified</th><th>Size</th><th>Status</th><th>Preview</th></tr>
+        <tr><th>Monitor</th><th>Addon</th><th>Status</th><th>Sources</th><th>Last Modified</th><th>Size</th><th>Preview</th></tr>
       </thead>
       <tbody id="sourcesTable">
-        <tr class="empty-row"><td colspan="8">No sources discovered</td></tr>
+        <tr class="empty-row"><td colspan="7">No addons discovered</td></tr>
       </tbody>
     </table>
   </div>
@@ -557,49 +557,68 @@ async function unbanIP(ip) {
   catch (e) { toast(e.message, 'err'); }
 }
 
-// ---- Log Sources ----
+// ---- Addons ----
 async function loadSources() {
   try {
-    const sources = await api('GET', 'api/sources');
+    const addons = await api('GET', 'api/addons');
     const tb = document.getElementById('sourcesTable');
-    if (!sources.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="8">No sources discovered</td></tr>'; return; }
-    tb.innerHTML = sources.map(s => {
-      const detail = s.type === 'file' ? esc(s.path || '') : esc(s.slug || '');
-      const typeLabel = s.type === 'file'
-        ? '<span class="badge badge-muted">File</span>'
-        : '<span class="badge badge-info">Docker</span>';
-      const stateLabel = s.state
-        ? (s.state === 'started' ? '<span class="badge badge-success">Running</span>' : '<span class="badge badge-muted">' + esc(s.state) + '</span>')
-        : (s.last_modified ? '<span class="badge badge-success">Active</span>' : '');
-      const lastMod = s.last_modified ? relTime(s.last_modified) : '–';
-      const size = s.size ? fmtSize(s.size) : '–';
-      const sid = s.id.replace(/'/g, "\\'");
-      const sname = (s.name || '').replace(/'/g, "\\'");
+    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No addons discovered</td></tr>'; return; }
+    tb.innerHTML = addons.map(a => {
+      const stateLabel = a.state === 'started'
+        ? '<span class="badge badge-success">Running</span>'
+        : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
+        : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
+      const srcInfo = [];
+      if (a.docker_log) srcInfo.push('Docker');
+      if (a.file_count) srcInfo.push(a.file_count + ' file' + (a.file_count > 1 ? 's' : ''));
+      const lastMod = a.last_modified ? relTime(a.last_modified) : '–';
+      const size = a.total_size ? fmtSize(a.total_size) : '–';
+      const aid = esc(a.id);
+      const aname = (a.name || '').replace(/'/g, "\\'");
       return `<tr>
         <td>
           <label class="toggle">
-            <input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="toggleSource('${esc(s.id)}', this.checked)">
+            <input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAddon('${aid}', this.checked)">
             <span class="slider"></span>
           </label>
         </td>
-        <td>${esc(s.name)}</td>
-        <td>${typeLabel}</td>
-        <td class="mono" style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.path || s.slug || '')}">${detail}</td>
+        <td><strong>${esc(a.name)}</strong></td>
+        <td>${stateLabel}</td>
+        <td style="font-size:12px">${srcInfo.join(' + ') || '–'}</td>
         <td class="countdown">${lastMod}</td>
         <td style="font-size:12px">${size}</td>
-        <td>${stateLabel}</td>
-        <td><button class="btn btn-ghost btn-sm" onclick="previewSource('${sid}','${sname}')">Preview</button></td>
+        <td><button class="btn btn-ghost btn-sm" onclick="previewAddon('${aid}','${aname}')">Preview</button></td>
       </tr>`;
     }).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
-async function toggleSource(id, enabled) {
-  try { await api('POST', 'api/sources/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' source', 'ok'); }
+async function toggleAddon(id, enabled) {
+  try { await api('POST', 'api/addons/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' monitoring', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
 }
 async function discoverSources() {
   try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(); }
   catch (e) { toast(e.message, 'err'); }
+}
+async function previewAddon(id, name) {
+  document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
+  document.getElementById('previewContent').textContent = 'Loading…';
+  document.getElementById('previewModal').style.display = 'block';
+  try {
+    const data = await api('POST', 'api/addons/preview', { id, lines: 100 });
+    const lines = data.lines || [];
+    if (!lines.length) {
+      document.getElementById('previewContent').textContent = '(empty or not accessible)';
+      return;
+    }
+    document.getElementById('previewContent').innerHTML = lines.map(l => {
+      const el = esc(l);
+      return el.replace(/(login|auth|password|fail|denied|invalid|wrong|401|403|blocked|reject|credential|attempt|brute)/gi,
+        '<span style="color:var(--warn);font-weight:600">$1</span>');
+    }).join('\n');
+  } catch (e) {
+    document.getElementById('previewContent').textContent = 'Error: ' + e.message;
+  }
 }
 
 // ---- Alerts ----
