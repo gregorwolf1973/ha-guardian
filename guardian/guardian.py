@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -427,7 +427,7 @@ def _scan_directory_for_logs(base_dir: str, max_depth: int = MAX_SCAN_DEPTH) -> 
     return found
 
 
-STARTUP_LOG_RE = re.compile(r"^addon_([a-z0-9_]+?)(?:\.log|_\w+\.log)$", re.IGNORECASE)
+STARTUP_LOG_RE = re.compile(r"^addon_([a-z0-9_]+)\.log$", re.IGNORECASE)
 
 
 def _extract_addon_slug_from_path(path: str) -> Optional[str]:
@@ -546,6 +546,10 @@ class SourceManager:
                             slug = addon.get("slug", "")
                             addon_map[slug] = addon.get("name", slug)
                             addon_states[slug] = addon.get("state", "")
+                        log.info("Fetched %d addons from Supervisor API", len(addon_map))
+                    else:
+                        body = await resp.text()
+                        log.warning("Supervisor API /addons returned %d: %s", resp.status, body[:200])
         except Exception as e:
             log.warning("Could not fetch addon list: %s", e)
         self._addon_states = addon_states
@@ -1175,9 +1179,10 @@ class Detector:
 # Log Scanner — tails files + polls addon docker logs
 # ---------------------------------------------------------------------------
 class LogScanner:
-    def __init__(self, source_mgr: SourceManager, detector: Detector):
+    def __init__(self, source_mgr: SourceManager, detector: Detector, config: Config):
         self.source_mgr = source_mgr
         self.detector = detector
+        self.config = config
         self._file_state: dict = {}   # path -> {"inode": int, "pos": int}
         self._addon_state: dict = {}  # slug -> last_length
         # Buffer of recent unmatched auth-related lines (for debugging)
@@ -1199,6 +1204,34 @@ class LogScanner:
                 await self._poll_addon(src)
             await asyncio.sleep(1)
 
+    def _calc_initial_pos(self, path: str, stat_result) -> int:
+        """Calculate where to start reading a file on first scan.
+
+        Uses the configured alert_window_hours to estimate how far back to read.
+        If the file is younger than the window, read from the beginning.
+        Otherwise, estimate the position proportionally based on file age.
+        """
+        size = stat_result.st_size
+        if size == 0:
+            return 0
+        mtime = stat_result.st_mtime
+        # Use birth time if available, otherwise fall back to ctime
+        ctime = getattr(stat_result, "st_birthtime", stat_result.st_ctime)
+        now = datetime.now().timestamp()
+        file_age_seconds = max(1, now - ctime)
+        window_seconds = self.config.alert_window_hours * 3600
+
+        if file_age_seconds <= window_seconds:
+            # File is younger than window — read from start
+            return 0
+
+        # Estimate: assume log grows linearly over time
+        fraction_to_read = min(1.0, window_seconds / file_age_seconds)
+        pos = max(0, int(size * (1.0 - fraction_to_read)))
+        # Cap at reasonable maximum (5MB) to avoid reading huge files on first scan
+        pos = max(pos, size - 5 * 1024 * 1024)
+        return max(0, pos)
+
     async def _scan_file(self, src: dict):
         path = src["path"]
         try:
@@ -1209,10 +1242,12 @@ class LogScanner:
             state = self._file_state.get(path)
 
             if state is None:
-                # First scan: read last 50KB to catch recent login attempts
-                initial_pos = max(0, size - 50 * 1024)
+                # First scan: estimate how much to read based on alert_window_hours.
+                # Use file mtime and ctime to guess the portion within the time window.
+                initial_pos = self._calc_initial_pos(path, stat)
                 self._file_state[path] = {"inode": inode, "pos": initial_pos}
-                log.info("First scan of %s — reading from pos %d/%d", path, initial_pos, size)
+                log.info("First scan of %s — reading from pos %d/%d (window=%dh)",
+                         path, initial_pos, size, self.config.alert_window_hours)
                 state = self._file_state[path]
 
             if inode != state["inode"] or size < state["pos"]:
@@ -1248,13 +1283,14 @@ class LogScanner:
                     url, headers=headers, timeout=aiohttp_client.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status != 200:
+                        log.debug("Addon %s logs returned %d", slug, resp.status)
                         return
                     text = await resp.text()
 
             last_len = self._addon_state.get(slug)
             if last_len is None:
-                # First poll: scan last 50KB to catch recent login attempts
-                initial_pos = max(0, len(text) - 50 * 1024)
+                # First poll: read all available text (Docker logs are typically not huge)
+                initial_pos = max(0, len(text) - 5 * 1024 * 1024)  # cap at 5MB
                 log.info("First poll of addon %s — reading from pos %d/%d", slug, initial_pos, len(text))
                 new_content = text[initial_pos:]
                 for line in new_content.splitlines():
@@ -1494,7 +1530,7 @@ async def main():
     alert_tracker = AlertTracker(config)
     detector = Detector(config, bans, alert_tracker)
     source_mgr = SourceManager(config)
-    scanner = LogScanner(source_mgr, detector)
+    scanner = LogScanner(source_mgr, detector, config)
 
     log.info("HA Guardian %s starting on port %d", VERSION, PORT)
 
