@@ -26,8 +26,8 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.7.3"
-PORT = 8099
+VERSION = "1.8.0"
+PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
 LOG_SCAN_DIRS = [
@@ -271,6 +271,9 @@ class Config:
                 self._state.whitelist = opts_wl
             if not self._state.trusted_domains and opts_td:
                 self._state.trusted_domains = opts_td
+
+            # Ensure HA internal networks are always whitelisted
+            self._ensure_default_whitelist()
         except Exception as e:
             log.warning("Could not load options.json: %s — using defaults", e)
 
@@ -284,6 +287,24 @@ class Config:
             self.ban_duration_minutes = max(0, int(ov["ban_duration_minutes"]))
         if "alert_window_hours" in ov:
             self.alert_window_hours = max(1, int(ov["alert_window_hours"]))
+
+    # HA internal networks that should never be banned
+    HA_DEFAULT_WHITELIST = [
+        "172.30.32.0/23",   # HA Supervisor internal network
+        "127.0.0.1",        # localhost
+    ]
+
+    def _ensure_default_whitelist(self):
+        """Ensure HA internal IPs are always in the whitelist."""
+        wl = list(self._state.whitelist)
+        changed = False
+        for entry in self.HA_DEFAULT_WHITELIST:
+            if entry not in wl:
+                wl.append(entry)
+                changed = True
+                log.info("Auto-added %s to whitelist (HA internal)", entry)
+        if changed:
+            self._state.whitelist = wl
 
     @property
     def whitelist(self) -> list:
@@ -579,6 +600,10 @@ class SourceManager:
                         self._sources[sid]["addon_slug"] = slug
                         if slug in addon_map:
                             self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
+                        # Auto-enable if addon is active but this source is disabled
+                        if not self._sources[sid].get("enabled") and self._is_addon_enabled(slug):
+                            self._sources[sid]["enabled"] = True
+                            log.info("Auto-enabled existing source: %s", self._sources[sid].get("name", path))
                     continue
 
                 name = _friendly_name(path, addon_map)
