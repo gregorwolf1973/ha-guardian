@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.7.2"
+VERSION = "1.7.3"
 PORT = 8099
 
 # Directories to scan for log files
@@ -1130,7 +1130,8 @@ class LogScanner:
         log.info("Log scanner started — %d source(s) enabled out of %d total",
                  len(enabled), len(self.source_mgr.get_all()))
         for s in enabled:
-            log.info("  Active: %s (%s)", s.get("name"), s.get("path", s.get("slug", "")))
+            log.info("  Active: [%s] %s (%s)", s.get("type"), s.get("name"),
+                     s.get("path", s.get("slug", "")))
 
         while True:
             for src in self.source_mgr.get_enabled("file"):
@@ -1149,8 +1150,11 @@ class LogScanner:
             state = self._file_state.get(path)
 
             if state is None:
-                self._file_state[path] = {"inode": inode, "pos": size}
-                return
+                # First scan: read last 50KB to catch recent login attempts
+                initial_pos = max(0, size - 50 * 1024)
+                self._file_state[path] = {"inode": inode, "pos": initial_pos}
+                log.info("First scan of %s — reading from pos %d/%d", path, initial_pos, size)
+                state = self._file_state[path]
 
             if inode != state["inode"] or size < state["pos"]:
                 state["inode"] = inode
@@ -1186,6 +1190,12 @@ class LogScanner:
 
             last_len = self._addon_state.get(slug)
             if last_len is None:
+                # First poll: scan last 50KB to catch recent login attempts
+                initial_pos = max(0, len(text) - 50 * 1024)
+                log.info("First poll of addon %s — reading from pos %d/%d", slug, initial_pos, len(text))
+                new_content = text[initial_pos:]
+                for line in new_content.splitlines():
+                    await self._process_line(line, src)
                 self._addon_state[slug] = len(text)
                 return
             if len(text) < last_len:
