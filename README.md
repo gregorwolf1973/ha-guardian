@@ -1,5 +1,7 @@
 # HA Guardian
 
+Not finished jet, i'm working on it!!!
+
 A brute-force protection addon for Home Assistant, similar to CrowdSec/fail2ban.
 
 ## Features
