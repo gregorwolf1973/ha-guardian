@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.12.0"
+VERSION = "1.13.0"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -140,6 +140,15 @@ PATTERNS = {
         r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
         r'.*"POST\s+\S*(?:/login|/signin|/sign_in|/auth|/user/login|/api/v\d+/auth)'
         r'\s+HTTP/\S+"\s+(?:4[0-9]{2}|5[0-9]{2})\s',
+        re.IGNORECASE,
+    ),
+    # Nginx Proxy Manager custom log format:
+    # [date] - <status> <status> - POST https <host> "/path" [Client <ip>] ...
+    "npm_proxy": re.compile(
+        r'(?:4[0-9]{2}|5[0-9]{2}).*?'
+        r'"(?:[^"]*(?:/login|/signin|/sign_in|/auth|/user/login|/admin|'
+        r'/identity/connect/token|/api/v\d+/auth)[^"]*)"\s+'
+        r'\[Client\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]',
         re.IGNORECASE,
     ),
 }
