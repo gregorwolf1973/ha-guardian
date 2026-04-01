@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.10.0"
+VERSION = "1.12.0"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -153,6 +153,47 @@ AUTH_KEYWORDS_RE = re.compile(
     r"wrong|bad.?pass|blocked|reject|unauth)",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Timestamp parsing — used to skip log lines outside the monitoring window
+# ---------------------------------------------------------------------------
+_TS_PATTERNS = [
+    # ISO / Docker: 2026-03-29T10:00:00 or 2026-03-29 10:00:00
+    re.compile(r'(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})'),
+    # CLF Apache/Nginx: 29/Mar/2026:10:00:00
+    re.compile(r'(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2})'),
+    # Vaultwarden: [2026-03-29][10:00:00]
+    re.compile(r'\[(\d{4}-\d{2}-\d{2})\]\[(\d{2}:\d{2}:\d{2})\]'),
+    # Syslog: Mar 29 10:00:00
+    re.compile(r'(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})'),
+]
+
+_TS_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%d/%b/%Y:%H:%M:%S",
+    "%b %d %H:%M:%S",
+    "%b  %d %H:%M:%S",  # syslog single-digit day with extra space
+]
+
+
+def _parse_line_timestamp(line: str) -> Optional[datetime]:
+    """Extract the timestamp from a log line. Returns None if not recognisable."""
+    for pat in _TS_PATTERNS:
+        m = pat.search(line)
+        if not m:
+            continue
+        s = " ".join(g for g in m.groups() if g)
+        for fmt in _TS_FORMATS:
+            try:
+                dt = datetime.strptime(s.strip(), fmt)
+                if dt.year == 1900:  # syslog has no year
+                    dt = dt.replace(year=datetime.now().year)
+                return dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+    return None
 
 
 def extract_ip(line: str):
@@ -1174,6 +1215,17 @@ class Detector:
     def events(self) -> list:
         return list(self._events)
 
+    async def cleanup_windows_loop(self):
+        """Periodically remove expired IP entries from the tracking window."""
+        while True:
+            await asyncio.sleep(60)
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.config.window_minutes)
+            stale = [ip for ip, dq in self._windows.items() if not dq or dq[-1] < cutoff]
+            for ip in stale:
+                del self._windows[ip]
+            if stale:
+                log.debug("Cleaned up %d stale IP windows", len(stale))
+
 
 # ---------------------------------------------------------------------------
 # Log Scanner — tails files + polls addon docker logs
@@ -1311,6 +1363,12 @@ class LogScanner:
         line = line.strip()
         if not line:
             return
+        # Skip lines outside the monitoring window
+        ts = _parse_line_timestamp(line)
+        if ts is not None:
+            age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+            if age_seconds > self.config.window_minutes * 60:
+                return
         result = extract_ip(line)
         if result:
             ip, pattern_name = result
@@ -1545,6 +1603,7 @@ async def main():
         scanner.run(),
         scanner.rediscover_loop(),
         bans.expire_loop(),
+        detector.cleanup_windows_loop(),
     )
 
 
