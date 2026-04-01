@@ -49,7 +49,7 @@ Da aller externer Traffic über den HA-internen Proxy (`172.30.32.1`) läuft, en
 
 | Dienst | Empfohlene Quelle |
 |---|---|
-| Home Assistant Core | `Docker: Home Assistant Core` (immer aktiv lassen) |
+| Home Assistant Core | Datei `/config/home-assistant.log` (standardmäßig aktiv) |
 | Nginx Proxy Manager | `Docker: Nginx Proxy Manager` ← wichtigste Quelle |
 | 2FAuth | NPM (externe Zugriffe) + `Docker: 2FAuth` |
 | Vaultwarden | `Docker: Vaultwarden` + NPM |

@@ -863,21 +863,13 @@ class SourceManager:
                 self._sources[sid]["state"] = state
                 self._sources[sid]["name"] = f"Docker: {display_name}"
 
-        # 3) Add HA Core log as a special docker-like source (polls /core/logs)
-        core_sid = "addon:core"
-        if core_sid not in self._sources:
-            self._sources[core_sid] = {
-                "id": core_sid,
-                "name": "Docker: Home Assistant Core",
-                "type": "addon",
-                "slug": "core",
-                "state": "started",
-                "enabled": True,  # Always enabled by default
-            }
-            discovered += 1
-            log.debug("Added HA Core log source (polls /core/logs via Supervisor API)")
-        else:
-            self._sources[core_sid]["state"] = "started"
+        # HA Core log is covered by the file source /config/home-assistant.log.
+        # The Supervisor API endpoint /core/logs returns 404 on many setups,
+        # so we skip creating a redundant addon:core docker source entirely.
+        # Clean up legacy addon:core if it exists from a previous version.
+        if "addon:core" in self._sources:
+            del self._sources["addon:core"]
+            log.debug("Removed legacy addon:core source (use file source instead)")
 
         if discovered:
             log.debug("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
@@ -1500,11 +1492,7 @@ class LogScanner:
         try:
             async with aiohttp_client.ClientSession() as session:
                 headers = {"Authorization": f"Bearer {token}"}
-                # HA Core uses /core/logs, addons use /addons/{slug}/logs
-                if slug == "core":
-                    url = f"{SUPERVISOR_URL}/core/logs"
-                else:
-                    url = f"{SUPERVISOR_URL}/addons/{slug}/logs"
+                url = f"{SUPERVISOR_URL}/addons/{slug}/logs"
                 async with session.get(
                     url, headers=headers, timeout=aiohttp_client.ClientTimeout(total=10)
                 ) as resp:

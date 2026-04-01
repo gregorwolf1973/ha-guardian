@@ -125,7 +125,7 @@ Da der gesamte Addon-Traffic über den HA-internen Proxy (`172.30.32.1`) läuft,
 
 | Dienst | Empfohlene Quelle | Hinweis |
 |---|---|---|
-| **Home Assistant Core** | `Docker: Home Assistant Core` + `/config/home-assistant.log` | Standardmäßig aktiv, immer aktiviert lassen |
+| **Home Assistant Core** | `/config/home-assistant.log` (Datei) | Standardmäßig aktiv — reicht vollständig, kein Docker-Eintrag nötig |
 | **Nginx Proxy Manager** | `Docker: Nginx Proxy Manager` | Wichtigste Quelle für externe Zugriffe – echte IPs |
 | **2FAuth** | NPM (bevorzugt) + `Docker: 2FAuth` | Docker-Log zeigt nur `172.30.32.1`; NPM erkennt Fehllogins via HTTP 500 |
 | **Vaultwarden** | `Docker: Vaultwarden` + NPM | Vaultwarden loggt direkt, aber externe Zugriffe kommen über NPM |
