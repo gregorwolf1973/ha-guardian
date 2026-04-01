@@ -333,7 +333,6 @@
     <div class="field" style="justify-content:flex-end">
       <label>&nbsp;</label>
       <button class="btn btn-success" onclick="addWhitelist()">Add to Whitelist</button>
-      <button class="btn btn-primary" onclick="addMyIp()" style="margin-left:6px" title="Whitelist your current public IP (fetched from ipinfo.io)">+ My IP</button>
     </div>
   </div>
   <div class="section-header">
@@ -756,22 +755,6 @@ async function addWhitelist() {
   if (!entry) { toast('Enter an IP or CIDR', 'err'); return; }
   try { await api('POST', 'api/whitelist', { entry }); toast(entry + ' added', 'ok'); document.getElementById('wlEntry').value = ''; loadWhitelist(); }
   catch (e) { toast(e.message, 'err'); }
-}
-async function addMyIp() {
-  try {
-    const btn = event.target;
-    btn.disabled = true; btn.textContent = 'Fetching…';
-    const info = await fetch('https://ipinfo.io/json').then(r => r.json());
-    btn.disabled = false; btn.textContent = '+ My IP';
-    const ip = info.ip;
-    if (!ip) { toast('Could not determine public IP', 'err'); return; }
-    await api('POST', 'api/whitelist', { entry: ip });
-    toast(ip + ' added to whitelist', 'ok');
-    loadWhitelist();
-  } catch (e) {
-    event.target.disabled = false; event.target.textContent = '+ My IP';
-    toast('Error: ' + e.message, 'err');
-  }
 }
 
 async function removeWhitelistSafe(entry) {
