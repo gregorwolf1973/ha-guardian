@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.14.0"
+VERSION = "1.15.0"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -120,6 +120,12 @@ PATTERNS = {
     "laravel_ip_first": re.compile(
         r"from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
         r".*?(?:fail|invalid|wrong|denied|throttl|locked|block|credentials do not match)",
+        re.IGNORECASE,
+    ),
+    # Webtrees: failed login redirects back to /login?username=X&url=Y with HTTP 200
+    "webtrees_fail": re.compile(
+        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+        r'.*"GET\s+/login\?username=[^&"]+&url[^"]*\s+HTTP/\S+"\s+200\s',
         re.IGNORECASE,
     ),
     # DokuWiki auth.log: "LOGIN FAILURE admin from 1.2.3.4" or "auth_failure ... [1.2.3.4]"
