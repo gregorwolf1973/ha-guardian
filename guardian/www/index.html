@@ -220,7 +220,6 @@
   <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
   <button class="tab-btn" data-tab="bans">Blocked IPs</button>
   <button class="tab-btn" data-tab="sources">Addons</button>
-  <button class="tab-btn" data-tab="alerts">Alerts</button>
   <button class="tab-btn" data-tab="whitelist">Whitelist</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
   <button class="tab-btn" data-tab="rules">Rules</button>
@@ -236,10 +235,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th></tr>
+        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th><th></th></tr>
       </thead>
       <tbody id="eventsTable">
-        <tr class="empty-row"><td colspan="6">No events yet</td></tr>
+        <tr class="empty-row"><td colspan="7">No events yet</td></tr>
       </tbody>
     </table>
   </div>
@@ -297,24 +296,6 @@
       </thead>
       <tbody id="sourcesTable">
         <tr class="empty-row"><td colspan="7">No addons discovered</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<!-- ALERTS -->
-<div id="tab-alerts" class="tab-pane">
-  <div class="section-header">
-    <h2>Failed Login Attempts</h2>
-    <button class="btn btn-ghost btn-sm" onclick="loadAlerts()">↻ Refresh</button>
-  </div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Time</th><th>Source</th><th>IP Address</th><th>Log Line</th><th>Details</th></tr>
-      </thead>
-      <tbody id="alertsTable">
-        <tr class="empty-row"><td colspan="5">No alerts in the configured window</td></tr>
       </tbody>
     </table>
   </div>
@@ -516,7 +497,7 @@
 <div id="toast"></div>
 
 <script>
-const TABS = ['dashboard','bans','sources','alerts','whitelist','settings','rules','debug'];
+const TABS = ['dashboard','bans','sources','whitelist','settings','rules','debug'];
 let activeTab = 'dashboard';
 
 // ---- Tabs ----
@@ -534,7 +515,6 @@ function refreshTab(tab) {
   if (tab === 'dashboard') loadDashboard();
   else if (tab === 'bans') loadBans();
   else if (tab === 'sources') loadSources();
-  else if (tab === 'alerts') loadAlerts();
   else if (tab === 'whitelist') loadWhitelist();
   else if (tab === 'settings') loadSettings();
   else if (tab === 'rules') loadRules();
@@ -605,17 +585,32 @@ async function loadDashboard() {
   await loadStats();
   try {
     const events = await api('GET', 'api/events');
+    window._dashEvents = events;
     const tb = document.getElementById('eventsTable');
-    if (!events.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No events yet</td></tr>'; return; }
-    tb.innerHTML = events.map(e => `<tr>
+    if (!events.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No events yet</td></tr>'; return; }
+    tb.innerHTML = events.map((e, i) => `<tr>
       <td class="countdown">${relTime(e.time)}</td>
       <td class="mono">${esc(e.ip)}</td>
       <td style="font-size:12px">${esc(e.source_name || '–')}</td>
       <td>${e.count}</td>
       <td>${e.banned ? '<span class="badge badge-danger">BANNED</span>' : '<span class="badge badge-warn">Attempt</span>'}</td>
       <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || '–')}</code></td>
+      <td><button class="btn btn-ghost btn-sm" onclick="showDashDetail(${i})">Details</button></td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+function showDashDetail(idx) {
+  const e = (window._dashEvents || [])[idx];
+  if (!e) return;
+  document.getElementById('evidenceIp').textContent = e.ip;
+  const tb = document.getElementById('evidenceTable');
+  tb.innerHTML = `<tr>
+    <td>${esc(e.time)}</td>
+    <td>${esc(e.source_name || '–')}</td>
+    <td style="font-size:11px;word-break:break-all"><code>${esc(e.line || e.url || e.pattern || '–')}</code></td>
+  </tr>`;
+  document.getElementById('evidenceModal').style.display = 'block';
 }
 
 // ---- Bans ----
@@ -716,39 +711,6 @@ async function previewAddon(id, name) {
   } catch (e) {
     document.getElementById('previewContent').textContent = 'Error: ' + e.message;
   }
-}
-
-// ---- Alerts ----
-async function loadAlerts() {
-  try {
-    const events = await api('GET', 'api/events');
-    const tb = document.getElementById('alertsTable');
-    if (!events.length) {
-      tb.innerHTML = '<tr class="empty-row"><td colspan="5">No alerts in the configured window</td></tr>';
-      return;
-    }
-    tb.innerHTML = events.map((e, i) => `<tr>
-      <td class="countdown">${relTime(e.time)}</td>
-      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
-      <td class="mono">${esc(e.ip)}</td>
-      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || e.pattern || '–')}</code></td>
-      <td><button class="btn btn-ghost btn-sm" onclick="showEventDetail(${i})">Details</button></td>
-    </tr>`).join('');
-    window._alertEvents = events;
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-}
-
-function showEventDetail(idx) {
-  const e = (window._alertEvents || [])[idx];
-  if (!e) return;
-  document.getElementById('evidenceIp').textContent = e.ip;
-  const tb = document.getElementById('evidenceTable');
-  tb.innerHTML = `<tr>
-    <td>${esc(e.time)}</td>
-    <td>${esc(e.source_name || '–')}</td>
-    <td style="font-size:11px;word-break:break-all"><code>${esc(e.line || e.url || e.pattern || '–')}</code></td>
-  </tr>`;
-  document.getElementById('evidenceModal').style.display = 'block';
 }
 
 // ---- Whitelist ----

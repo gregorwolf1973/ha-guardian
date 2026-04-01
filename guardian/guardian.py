@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.5"
+VERSION = "1.16.6"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -814,10 +814,6 @@ class SourceManager:
                         self._sources[sid]["addon_slug"] = slug
                         if slug in addon_map:
                             self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
-                        # Auto-enable if addon is active but this source is disabled
-                        if not self._sources[sid].get("enabled") and self._is_addon_enabled(slug):
-                            self._sources[sid]["enabled"] = True
-                            log.info("Auto-enabled existing source: %s", self._sources[sid].get("name", path))
                     continue
 
                 name = _friendly_name(path, addon_map)
@@ -866,10 +862,6 @@ class SourceManager:
             else:
                 self._sources[sid]["state"] = state
                 self._sources[sid]["name"] = f"Docker: {display_name}"
-                # Auto-enable if addon has other enabled sources but this docker source is off
-                if not self._sources[sid].get("enabled") and self._is_addon_enabled(slug):
-                    self._sources[sid]["enabled"] = True
-                    log.info("Auto-enabled existing docker source: %s (%s)", display_name, slug)
 
         # 3) Add HA Core log as a special docker-like source (polls /core/logs)
         core_sid = "addon:core"
