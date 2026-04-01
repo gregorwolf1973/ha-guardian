@@ -234,10 +234,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th><th></th></tr>
+        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th></tr>
       </thead>
       <tbody id="eventsTable">
-        <tr class="empty-row"><td colspan="7">No events yet</td></tr>
+        <tr class="empty-row"><td colspan="6">No events yet</td></tr>
       </tbody>
     </table>
   </div>
@@ -411,6 +411,7 @@
         <tr class="empty-row"><td colspan="6">No rules loaded</td></tr>
       </tbody>
     </table>
+  </div>
   <!-- Unmatched Auth Lines (moved from Debug) -->
   <div class="section-header" style="margin-top:24px">
     <h2>Unmatched Auth Lines</h2>
@@ -580,32 +581,17 @@ async function loadDashboard() {
   await loadStats();
   try {
     const events = await api('GET', 'api/events');
-    window._dashEvents = events;
     const tb = document.getElementById('eventsTable');
-    if (!events.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No events yet</td></tr>'; return; }
-    tb.innerHTML = events.map((e, i) => `<tr>
+    if (!events.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No events yet</td></tr>'; return; }
+    tb.innerHTML = events.map(e => `<tr>
       <td class="countdown">${relTime(e.time)}</td>
       <td class="mono">${esc(e.ip)}</td>
       <td style="font-size:12px">${esc(e.source_name || '–')}</td>
       <td>${e.count}</td>
       <td>${e.banned ? '<span class="badge badge-danger">BANNED</span>' : '<span class="badge badge-warn">Attempt</span>'}</td>
       <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || '–')}</code></td>
-      <td><button class="btn btn-ghost btn-sm" onclick="showDashDetail(${i})">Details</button></td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
-}
-
-function showDashDetail(idx) {
-  const e = (window._dashEvents || [])[idx];
-  if (!e) return;
-  document.getElementById('evidenceIp').textContent = e.ip;
-  const tb = document.getElementById('evidenceTable');
-  tb.innerHTML = `<tr>
-    <td>${esc(e.time)}</td>
-    <td>${esc(e.source_name || '–')}</td>
-    <td style="font-size:11px;word-break:break-all"><code>${esc(e.line || e.url || e.pattern || '–')}</code></td>
-  </tr>`;
-  document.getElementById('evidenceModal').style.display = 'block';
 }
 
 // ---- Bans ----
