@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.17.0"
+VERSION = "1.17.1"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -948,9 +948,13 @@ class SourceManager:
             if not addon_id and src.get("path") == self.config.log_file:
                 addon_id = "__core__"
 
-            # Ungrouped sources → put in __custom__ group
+            # Ungrouped auto-discovered sources → skip
+            # Only manually-added sources (custom=True flag) appear in __custom__ group
             if not addon_id:
-                addon_id = "__custom__"
+                if src.get("custom"):
+                    addon_id = "__custom__"
+                else:
+                    continue
 
             if addon_id not in groups:
                 groups[addon_id] = {
@@ -1036,7 +1040,7 @@ class SourceManager:
                     src_addon = "__core__"
                 else:
                     extracted = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
-                    src_addon = extracted if extracted else "__custom__"
+                    src_addon = extracted if extracted else ("__custom__" if src.get("custom") else None)
             if src_addon == addon_id:
                 src["enabled"] = enabled
                 found = True
@@ -1064,6 +1068,7 @@ class SourceManager:
             "type": "file",
             "path": path,
             "enabled": True,
+            "custom": True,  # manually added — show in __custom__ group
             "last_modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
             "size": st.st_size,
         }
@@ -1779,11 +1784,25 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         pattern = req.rel_url.query.get("pattern", "").strip()
         if not pattern or len(pattern) < 2:
             return web.json_response({"error": "pattern too short"}, status=400)
-        # Sanitise — no shell metacharacters
+        results = []
+        # If user entered an absolute path, look it up directly
+        if pattern.startswith("/"):
+            p = Path(pattern)
+            if p.is_file():
+                try:
+                    st = p.stat()
+                    results.append({
+                        "path": pattern,
+                        "size": st.st_size,
+                        "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                    })
+                except OSError:
+                    results.append({"path": pattern, "size": None, "mtime": None})
+            return web.json_response({"results": results})
+        # Glob pattern — only allow safe filename characters
         safe = re.compile(r'^[\w\-.*?]+$')
         if not safe.match(pattern):
             return web.json_response({"error": "invalid pattern"}, status=400)
-        results = []
         pat_re = re.compile(fnmatch_translate(pattern), re.IGNORECASE)
         for root in _SEARCH_ROOTS:
             if not Path(root).exists():
