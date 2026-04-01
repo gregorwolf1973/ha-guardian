@@ -27,15 +27,9 @@ Brute-force-Schutz für Home Assistant: überwacht Logs aller installierten Addo
 
 ---
 
-## Empfehlung: HA-eigenen Bann deaktivieren
+## Kompatibilität mit HA's eingebautem Bann-Mechanismus
 
-Um Konflikte zu vermeiden, deaktiviere HA's eingebauten IP-Bann-Mechanismus:
-
-```yaml
-# configuration.yaml
-http:
-  ip_ban_enabled: false
-```
+Guardian und HA's `ip_ban_enabled` arbeiten unabhängig und können gleichzeitig aktiv sein. HA schützt nur die eigene Weboberfläche, Guardian zusätzlich alle überwachten Addons. Kein Konflikt, kein Handlungsbedarf.
 
 ---
 
@@ -71,11 +65,9 @@ Im Addons-Tab gibt es eine **Dateisuche**: Dateiname eingeben (z. B. `auth.log`)
 
 ---
 
-## Wichtiger Hinweis zu Bans
+## Bans wirken in Echtzeit
 
-`ip_bans.yaml` wird von Home Assistant **nur beim Start** eingelesen. Nach einem automatischen Ban muss der HA Core neu gestartet werden:
-
-**Einstellungen → System → Neustart → Core neu starten**
+Home Assistant überwacht `ip_bans.yaml` auf Änderungen. Neue Bans von Guardian werden **sofort** ohne Neustart aktiv.
 
 ---
 
@@ -109,7 +101,7 @@ Login failed.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
 ## Häufige Fragen
 
 **Ban erscheint in der Liste, IP ist aber nicht gesperrt?**
-→ HA Core neu starten (ip_bans.yaml wird nur beim Start gelesen).
+→ HA überwacht `ip_bans.yaml` in Echtzeit, kein Neustart nötig. Prüfe ob die IP wirklich in `ip_bans.yaml` im Konfigurationsverzeichnis eingetragen ist.
 
 **Keine Alerts obwohl Fehllogins passieren?**
 → Im Addons-Tab prüfen ob die richtige Quelle aktiviert ist. Bei externen Zugriffen: NPM aktivieren.

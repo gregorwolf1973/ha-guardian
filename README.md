@@ -94,12 +94,7 @@ Die Werte in der HA-Addon-Konfigurationsseite dienen nur als initiale Standardwe
 | **Alert-Fenster (Std.)** | `24` | Wie weit zurück Ereignisse im Dashboard angezeigt werden |
 | **Log-Datei** | `/config/home-assistant.log` | Pfad zur HA-Core-Log-Datei |
 
-> **Empfehlung:** Deaktiviere HA's eingebauten Bann-Mechanismus um Konflikte zu vermeiden:
-> ```yaml
-> # configuration.yaml
-> http:
->   ip_ban_enabled: false
-> ```
+> **Hinweis:** HA's eingebauter Bann-Mechanismus (`ip_ban_enabled`) und Guardian arbeiten unabhängig voneinander und können problemlos gleichzeitig aktiv sein. HA schützt nur die eigene Weboberfläche, Guardian zusätzlich alle anderen Addons.
 
 ---
 
@@ -245,8 +240,7 @@ Zeigt alle erkannten Login-Fehlversuche im konfigurierten Zeitfenster.
 - **Unban** – hebt die Sperre sofort auf
 - **Ban IP** – manuelle Sperre mit optionaler Dauer und Begründung
 
-> **Wichtig:** `ip_bans.yaml` wird von Home Assistant **nur beim Start** eingelesen. Nach einem automatischen Ban muss der HA Core neu gestartet werden damit die Sperre greift:
-> **Einstellungen → System → Neustart → Core neu starten**
+> Home Assistant überwacht `ip_bans.yaml` auf Änderungen und wendet neue Bans **in Echtzeit** an. Ein Neustart ist nicht erforderlich.
 
 ---
 
@@ -268,7 +262,7 @@ Das ist gewollt: Ein Angreifer der mehrere Dienste gleichzeitig attackiert soll 
 ## Häufige Fragen
 
 **Q: Der Ban erscheint in der Liste, aber die IP ist nicht wirklich gesperrt?**
-→ `ip_bans.yaml` wird von HA nur beim Start gelesen → HA Core neu starten.
+→ HA überwacht `ip_bans.yaml` in Echtzeit — kein Neustart nötig. Prüfe ob die IP wirklich in `ip_bans.yaml` steht (Datei im Konfigurationsverzeichnis).
 
 **Q: Keine Alerts obwohl Fehllogins stattfinden?**
 → Im Addons-Tab prüfen ob die relevante Quelle aktiviert ist. Bei externen Zugriffen: NPM-Log aktivieren.
