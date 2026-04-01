@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.8"
+VERSION = "1.17.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -948,9 +948,9 @@ class SourceManager:
             if not addon_id and src.get("path") == self.config.log_file:
                 addon_id = "__core__"
 
-            # Skip ungrouped sources (loose files not belonging to any addon)
+            # Ungrouped sources → put in __custom__ group
             if not addon_id:
-                continue
+                addon_id = "__custom__"
 
             if addon_id not in groups:
                 groups[addon_id] = {
@@ -992,6 +992,8 @@ class SourceManager:
             if not g["name"]:
                 if addon_id == "__core__":
                     g["name"] = "Home Assistant Core"
+                elif addon_id == "__custom__":
+                    g["name"] = "Custom File Sources"
                 else:
                     # Try to get clean name from the source name
                     sname = src.get("name", addon_id)
@@ -1033,13 +1035,41 @@ class SourceManager:
                 if addon_id == "__core__" and src.get("path") == self.config.log_file:
                     src_addon = "__core__"
                 else:
-                    src_addon = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+                    extracted = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+                    src_addon = extracted if extracted else "__custom__"
             if src_addon == addon_id:
                 src["enabled"] = enabled
                 found = True
         if found:
             self._save()
         return found
+
+    def add_custom_source(self, path: str) -> tuple:
+        """Manually add a file path as a custom source. Returns (ok, error)."""
+        p = Path(path)
+        if not p.exists():
+            return False, f"File not found: {path}"
+        if not p.is_file():
+            return False, f"Not a file: {path}"
+        sid = "file:" + path
+        if sid in self._sources:
+            return False, "Source already exists"
+        try:
+            st = p.stat()
+        except OSError as e:
+            return False, str(e)
+        self._sources[sid] = {
+            "id": sid,
+            "name": p.name,
+            "type": "file",
+            "path": path,
+            "enabled": True,
+            "last_modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+            "size": st.st_size,
+        }
+        self._save()
+        log.info("Manually added custom source: %s", path)
+        return True, ""
 
     def preview_addon(self, addon_id: str) -> Optional[str]:
         """Find the best source ID for previewing an addon's logs.
@@ -1660,6 +1690,16 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         await source_mgr.discover()
         return web.json_response({"ok": True, "sources": source_mgr.get_all()})
 
+    async def handle_add_custom_source(req):
+        d = await req.json()
+        path = (d.get("path") or "").strip()
+        if not path:
+            return web.json_response({"ok": False, "error": "path required"}, status=400)
+        ok, err = source_mgr.add_custom_source(path)
+        if not ok:
+            return web.json_response({"ok": False, "error": err}, status=400)
+        return web.json_response({"ok": True})
+
     async def handle_get_addons(req):
         return web.json_response(source_mgr.get_addons())
 
@@ -1855,6 +1895,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_get("/api/sources", handle_get_sources)
     app.router.add_post("/api/sources/toggle", handle_toggle_source)
     app.router.add_post("/api/sources/discover", handle_discover_sources)
+    app.router.add_post("/api/sources/add", handle_add_custom_source)
     app.router.add_post("/api/sources/preview", handle_preview_source)
     app.router.add_get("/api/addons", handle_get_addons)
     app.router.add_post("/api/addons/toggle", handle_toggle_addon)

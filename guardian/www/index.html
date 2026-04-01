@@ -288,6 +288,17 @@
       <button class="btn btn-ghost btn-sm" onclick="loadSources()">↻ Refresh</button>
     </div>
   </div>
+  <!-- Add custom file source -->
+  <div class="add-row" style="margin-bottom:12px">
+    <div class="field" style="flex:1">
+      <label>Custom Log File <span style="color:var(--text-muted);font-size:11px">(absolute path, e.g. /share/nextcloud/nextcloud.log)</span></label>
+      <input id="customSourcePath" type="text" placeholder="/share/nextcloud/nextcloud.log" style="width:100%">
+    </div>
+    <div class="field" style="justify-content:flex-end">
+      <label>&nbsp;</label>
+      <button class="btn btn-primary" onclick="addCustomSource()">+ Add File Source</button>
+    </div>
+  </div>
   <div class="table-wrap">
     <table>
       <thead>
@@ -637,10 +648,13 @@ async function loadSources() {
     const tb = document.getElementById('sourcesTable');
     if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No addons discovered</td></tr>'; return; }
     tb.innerHTML = addons.map(a => {
-      const stateLabel = a.state === 'started'
-        ? '<span class="badge badge-success">Running</span>'
-        : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
-        : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
+      const isCustom = a.id === '__custom__';
+      const stateLabel = isCustom
+        ? '<span class="badge badge-muted">Custom</span>'
+        : a.state === 'started'
+          ? '<span class="badge badge-success">Running</span>'
+          : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
+          : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
       const srcInfo = [];
       if (a.docker_log) srcInfo.push('Docker');
       if (a.file_count) srcInfo.push(a.file_count + ' file' + (a.file_count > 1 ? 's' : ''));
@@ -648,14 +662,15 @@ async function loadSources() {
       const size = a.total_size ? fmtSize(a.total_size) : '–';
       const aid = esc(a.id);
       const aname = (a.name || '').replace(/'/g, "\\'");
-      return `<tr>
+      const rowStyle = isCustom ? ' style="border-top:2px solid var(--primary);opacity:0.9"' : '';
+      return `<tr${rowStyle}>
         <td>
           <label class="toggle">
             <input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAddon('${aid}', this.checked)">
             <span class="slider"></span>
           </label>
         </td>
-        <td><strong>${esc(a.name)}</strong></td>
+        <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--text-muted)">(manually added)</span>' : ''}</td>
         <td>${stateLabel}</td>
         <td style="font-size:12px">${srcInfo.join(' + ') || '–'}</td>
         <td class="countdown">${lastMod}</td>
@@ -668,6 +683,16 @@ async function loadSources() {
 async function toggleAddon(id, enabled) {
   try { await api('POST', 'api/addons/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' monitoring', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
+}
+async function addCustomSource() {
+  const path = document.getElementById('customSourcePath').value.trim();
+  if (!path) { toast('Please enter a file path', 'err'); return; }
+  try {
+    await api('POST', 'api/sources/add', { path });
+    toast('Source added: ' + path, 'ok');
+    document.getElementById('customSourcePath').value = '';
+    loadSources();
+  } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 async function discoverSources() {
   try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(); }
