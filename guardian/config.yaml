@@ -1,5 +1,5 @@
 name: "HA Guardian"
-version: "1.16.1"
+version: "1.16.2"
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs"
 url: "https://github.com/gregorwolf1973/ha-guardian"
@@ -33,15 +33,9 @@ options:
   ban_duration_minutes: 240
   alert_window_hours: 24
   log_file: "/config/home-assistant.log"
-  whitelist: []
-  trusted_domains: []
 schema:
   max_attempts: "int(1,100)"
   window_minutes: "int(1,60)"
   ban_duration_minutes: "int(0,43200)"
   alert_window_hours: "int(1,168)"
   log_file: str
-  whitelist:
-    - "str?"
-  trusted_domains:
-    - "str?"

@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.1"
+VERSION = "1.16.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -328,8 +328,19 @@ _TS_FORMATS = [
 ]
 
 
+_TZ_OFFSET_RE = re.compile(r'([+-])(\d{2}):?(\d{2})(?:\s|]|$)')
+
+
 def _parse_line_timestamp(line: str) -> Optional[datetime]:
-    """Extract the timestamp from a log line. Returns None if not recognisable."""
+    """Extract the timestamp from a log line, corrected to UTC. Returns None if not recognisable."""
+    # Try to extract a UTC offset from the line (+0200, -05:00, etc.)
+    tz: timezone = timezone.utc
+    tz_m = _TZ_OFFSET_RE.search(line)
+    if tz_m:
+        sign = 1 if tz_m.group(1) == '+' else -1
+        tz = timezone(timedelta(hours=sign * int(tz_m.group(2)),
+                                minutes=sign * int(tz_m.group(3))))
+
     for pat in _TS_PATTERNS:
         m = pat.search(line)
         if not m:
@@ -340,7 +351,9 @@ def _parse_line_timestamp(line: str) -> Optional[datetime]:
                 dt = datetime.strptime(s.strip(), fmt)
                 if dt.year == 1900:  # syslog has no year
                     dt = dt.replace(year=datetime.now().year)
-                return dt.replace(tzinfo=timezone.utc)
+                # Tag with the detected timezone (or UTC if none found),
+                # then normalise to UTC for comparison.
+                return dt.replace(tzinfo=tz).astimezone(timezone.utc)
             except ValueError:
                 continue
     return None
@@ -1414,7 +1427,7 @@ class LogScanner:
                      s.get("path", s.get("slug", "")))
 
         _addon_tick = 0
-        _ADDON_POLL_INTERVAL = 5  # poll addon Docker logs every N seconds
+        _ADDON_POLL_INTERVAL = 15  # poll addon Docker logs every N seconds
         while True:
             for src in self.source_mgr.get_enabled("file"):
                 await self._scan_file(src)
