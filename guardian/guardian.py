@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.2"
+VERSION = "1.16.3"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1532,7 +1532,12 @@ class LogScanner:
                 self._addon_state[slug] = len(text)
                 return
             if len(text) < last_len:
-                last_len = 0
+                # Log was rotated/truncated — skip this poll to avoid re-processing
+                # old lines. The timestamp filter is a safety net but can't prevent
+                # duplicates for recent lines within the monitoring window.
+                log.debug("Addon %s log shrank (%d→%d) — skipping re-process", slug, last_len, len(text))
+                self._addon_state[slug] = len(text)
+                return
             if len(text) > last_len:
                 new_content = text[last_len:]
                 for line in new_content.splitlines():

@@ -322,6 +322,9 @@
 
 <!-- WHITELIST -->
 <div id="tab-whitelist" class="tab-pane">
+  <div id="autoWlBanner" style="padding:10px 14px;margin-bottom:12px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+    <span id="autoWlStatus" style="font-size:13px">Checking your IP…</span>
+  </div>
   <div class="add-row">
     <div class="field">
       <label>IP Address or CIDR Range</label>
@@ -736,6 +739,7 @@ function showEventDetail(idx) {
 
 // ---- Whitelist ----
 async function loadWhitelist() {
+  _renderAutoWlStatus();
   try {
     const list = await api('GET', 'api/whitelist');
     const tb = document.getElementById('whitelistTable');
@@ -993,8 +997,72 @@ async function testRule() {
   } catch (e) { res.innerHTML = '<span style="color:var(--danger)">' + esc(e.message) + '</span>'; }
 }
 
+// ---- Auto-Whitelist My IP ----
+const AW_IP_KEY    = 'guardian_auto_ip';
+const AW_OPTOUT_KEY = 'guardian_auto_ip_optout';
+
+function _renderAutoWlStatus() {
+  const el = document.getElementById('autoWlStatus');
+  if (!el) return;
+  if (localStorage.getItem(AW_OPTOUT_KEY) === '1') {
+    el.innerHTML = '<span style="color:var(--text-muted)">Auto-whitelist deactivated.</span>'
+      + ' <button class="btn btn-ghost btn-sm" onclick="enableAutoWl()">Enable</button>';
+  } else {
+    const ip = localStorage.getItem(AW_IP_KEY);
+    if (ip) {
+      el.innerHTML = '<span style="color:var(--success)">✓ Your current IP <strong class="mono">' + esc(ip) + '</strong> is auto-whitelisted (updated on every page load)</span>'
+        + ' <button class="btn btn-ghost btn-sm" onclick="disableAutoWl()">Disable</button>';
+    } else {
+      el.innerHTML = '<span style="color:var(--text-muted)">Fetching your IP…</span>';
+    }
+  }
+}
+
+async function autoWhitelistMyIp() {
+  if (localStorage.getItem(AW_OPTOUT_KEY) === '1') {
+    _renderAutoWlStatus();
+    return;
+  }
+  try {
+    const info = await fetch('https://ipinfo.io/json').then(r => r.json());
+    const newIp = (info.ip || '').trim();
+    if (!newIp) return;
+    const prevIp = localStorage.getItem(AW_IP_KEY);
+    if (prevIp && prevIp !== newIp) {
+      // IP changed — remove old entry silently
+      try { await api('POST', 'api/whitelist/delete', { entry: prevIp }); } catch (_) {}
+    }
+    if (!prevIp || prevIp !== newIp) {
+      try { await api('POST', 'api/whitelist', { entry: newIp }); } catch (_) {}
+    }
+    localStorage.setItem(AW_IP_KEY, newIp);
+    _renderAutoWlStatus();
+  } catch (e) {
+    const el = document.getElementById('autoWlStatus');
+    if (el) el.innerHTML = '<span style="color:var(--text-muted)">Could not determine your public IP (ipinfo.io unreachable)</span>';
+  }
+}
+
+function disableAutoWl() {
+  if (!confirm('Disable auto-whitelist?\n\nYour IP will be removed from the whitelist. You could be banned if you make too many failed login attempts.\n\nContinue?')) return;
+  localStorage.setItem(AW_OPTOUT_KEY, '1');
+  const prevIp = localStorage.getItem(AW_IP_KEY);
+  if (prevIp) {
+    api('POST', 'api/whitelist/delete', { entry: prevIp }).catch(() => {});
+    localStorage.removeItem(AW_IP_KEY);
+  }
+  _renderAutoWlStatus();
+  loadWhitelist();
+}
+
+function enableAutoWl() {
+  localStorage.removeItem(AW_OPTOUT_KEY);
+  autoWhitelistMyIp().then(() => loadWhitelist());
+}
+
 // ---- Init & Auto-Refresh ----
 loadStats(); loadDashboard();
+autoWhitelistMyIp();
 setInterval(() => { if (activeTab === 'dashboard') loadDashboard(); else loadStats(); }, 15000);
 </script>
 </body>
