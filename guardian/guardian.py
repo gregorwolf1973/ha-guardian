@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -120,6 +120,12 @@ PATTERNS = {
     "laravel_ip_first": re.compile(
         r"from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
         r".*?(?:fail|invalid|wrong|denied|throttl|locked|block|credentials do not match)",
+        re.IGNORECASE,
+    ),
+    # DokuWiki auth.log: "LOGIN FAILURE admin from 1.2.3.4" or "auth_failure ... [1.2.3.4]"
+    "dokuwiki_auth": re.compile(
+        r"(?:LOGIN FAILURE|auth.?fail|authentication fail)"
+        r".*?(?:\[|from\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
         re.IGNORECASE,
     ),
     # 2FAuth / Laravel: "User login requested" in laravel.log (for file sources)
