@@ -26,7 +26,8 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.15.0"
+VERSION = "1.16.0"
+RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
 # Directories to scan for log files
@@ -71,99 +72,227 @@ log = logging.getLogger("guardian")
 # ---------------------------------------------------------------------------
 # Detection patterns — each yields an IP via group(1) or group(2)
 # ---------------------------------------------------------------------------
-PATTERNS = {
-    "ha_ban": re.compile(
-        r"\[homeassistant\.components\.http\.ban\]"
-        r".*?(?:from\s+\S+\s+\(([0-9a-fA-F:.]+)\)|from\s+([0-9a-fA-F:.]+))"
-    ),
-    "nginx_auth": re.compile(
-        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
-        r'.*"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s.*"\s+(?:401|403)\s'
-    ),
-    "generic_fail": re.compile(
-        r"(?:authentication fail|login fail|invalid password|unauthorized|"
-        r"access denied|bad password|failed login|invalid credential|"
-        r"wrong password|login error|auth error|permission denied)"
-        r".*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        re.IGNORECASE,
-    ),
-    "ssh_fail": re.compile(
-        r"[Ff]ailed password for.*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
-    ),
-    "nextcloud": re.compile(
-        r'"remoteAddr"\s*:\s*"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"'
-        r'.*"message"\s*:\s*"(?:Login failed|Bruteforce)',
-        re.IGNORECASE,
-    ),
-    "vaultwarden": re.compile(
-        r"(?:Username or password is incorrect|Invalid admin password)"
-        r".*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        re.IGNORECASE,
-    ),
-    "dovecot_postfix": re.compile(
-        r"(?:auth failed|authentication failure|SASL .+ authentication failed)"
-        r".*?(?:rip=|from=\[?)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        re.IGNORECASE,
-    ),
-    # Laravel apps (2FAuth, Heimdall, etc.) — matches both failed and throttled
-    # Format: [date] level.LEVEL: Message from IP
-    "laravel_auth": re.compile(
-        r"production\.(?:WARNING|NOTICE|ERROR|INFO)"
-        r".*?(?:Failed login|failed to authenticate|login attempt|"
-        r"Invalid (?:password|credentials|OTP)|throttle|too many (?:attempts|login)|"
-        r"blocked|locked out|User authentication failed|"
-        r"These credentials do not match)"
-        r".*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        re.IGNORECASE,
-    ),
-    # Broader Laravel: any line with IP + auth failure keywords (reverse order)
-    "laravel_ip_first": re.compile(
-        r"from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
-        r".*?(?:fail|invalid|wrong|denied|throttl|locked|block|credentials do not match)",
-        re.IGNORECASE,
-    ),
-    # Webtrees: failed login redirects back to /login?username=X&url=Y with HTTP 200
-    "webtrees_fail": re.compile(
-        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
-        r'.*"GET\s+/login\?username=[^&"]+&url[^"]*\s+HTTP/\S+"\s+200\s',
-        re.IGNORECASE,
-    ),
-    # DokuWiki auth.log: "LOGIN FAILURE admin from 1.2.3.4" or "auth_failure ... [1.2.3.4]"
-    "dokuwiki_auth": re.compile(
-        r"(?:LOGIN FAILURE|auth.?fail|authentication fail)"
-        r".*?(?:\[|from\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        re.IGNORECASE,
-    ),
-    # 2FAuth / Laravel: "User login requested" in laravel.log (for file sources)
-    "2fauth_login": re.compile(
-        r"production\.INFO:.*User login requested.*from\s+"
-        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        re.IGNORECASE,
-    ),
-    # HA Core: "Login attempt or request with invalid authentication from host (IP)"
-    "ha_core_invalid_auth": re.compile(
-        r"(?:Login attempt|invalid authentication)"
-        r".*?\((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)",
-        re.IGNORECASE,
-    ),
-    # HTTP access log: POST to login URLs with 4xx/5xx status (nginx/apache).
-    # Catches 2FAuth (POST /user/login → 500), and other web apps.
-    "http_login_fail": re.compile(
-        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
-        r'.*"POST\s+\S*(?:/login|/signin|/sign_in|/auth|/user/login|/api/v\d+/auth)'
-        r'\s+HTTP/\S+"\s+(?:4[0-9]{2}|5[0-9]{2})\s',
-        re.IGNORECASE,
-    ),
-    # Nginx Proxy Manager custom log format:
-    # [date] - <status> <status> - POST https <host> "/path" [Client <ip>] ...
-    "npm_proxy": re.compile(
-        r'(?:4[0-9]{2}|5[0-9]{2}).*?'
-        r'"(?:[^"]*(?:/login|/signin|/sign_in|/auth|/user/login|/admin|'
-        r'/identity/connect/token|/api/v\d+/auth)[^"]*)"\s+'
-        r'\[Client\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]',
-        re.IGNORECASE,
-    ),
-}
+# Detection patterns — populated at runtime by RulesManager
+# ---------------------------------------------------------------------------
+PATTERNS: dict = {}  # mutable; rebuilt by RulesManager._apply()
+
+DEFAULT_RULE_DEFS = [
+    {
+        "id": "ha_ban",
+        "description": "Home Assistant HTTP ban component log messages",
+        "pattern": r"\[homeassistant\.components\.http\.ban\].*?(?:from\s+\S+\s+\(([0-9a-fA-F:.]+)\)|from\s+([0-9a-fA-F:.]+))",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "nginx_auth",
+        "description": "Nginx HTTP 401/403 authentication failures",
+        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s.*\"\s+(?:401|403)\s",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "generic_fail",
+        "description": "Generic authentication failure keywords (keyword before IP)",
+        "pattern": r"(?:authentication fail|login fail|invalid password|unauthorized|access denied|bad password|failed login|invalid credential|wrong password|login error|auth error|permission denied).*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "ssh_fail",
+        "description": "SSH failed password log entries",
+        "pattern": r"[Ff]ailed password for.*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "nextcloud",
+        "description": "Nextcloud JSON log: Login failed or Bruteforce with remoteAddr",
+        "pattern": r"\"remoteAddr\"\s*:\s*\"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\".*\"message\"\s*:\s*\"(?:Login failed|Bruteforce)",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "vaultwarden",
+        "description": "Vaultwarden: Username or password is incorrect / Invalid admin password",
+        "pattern": r"(?:Username or password is incorrect|Invalid admin password).*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "dovecot_postfix",
+        "description": "Dovecot/Postfix SASL authentication failures",
+        "pattern": r"(?:auth failed|authentication failure|SASL .+ authentication failed).*?(?:rip=|from=\[?)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "laravel_auth",
+        "description": "Laravel apps (2FAuth, Heimdall…): failed login / throttle messages",
+        "pattern": r"production\.(?:WARNING|NOTICE|ERROR|INFO).*?(?:Failed login|failed to authenticate|login attempt|Invalid (?:password|credentials|OTP)|throttle|too many (?:attempts|login)|blocked|locked out|User authentication failed|These credentials do not match).*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "laravel_ip_first",
+        "description": "Laravel: IP first, then auth failure keyword",
+        "pattern": r"from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?(?:fail|invalid|wrong|denied|throttl|locked|block|credentials do not match)",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "webtrees_fail",
+        "description": "Webtrees: failed login redirect to /login?username=X&url=Y (HTTP 200)",
+        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"GET\s+/login\?username=[^&\"]+&url[^\"]*\s+HTTP/\S+\"\s+200\s",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "dokuwiki_auth",
+        "description": "DokuWiki auth.log: LOGIN FAILURE or auth_failure",
+        "pattern": r"(?:LOGIN FAILURE|auth.?fail|authentication fail).*?(?:\[|from\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "2fauth_login",
+        "description": "2FAuth Laravel log: User login requested from IP",
+        "pattern": r"production\.INFO:.*User login requested.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "ha_core_invalid_auth",
+        "description": "HA Core: Login attempt or invalid authentication from IP",
+        "pattern": r"(?:Login attempt|invalid authentication).*?\((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "http_login_fail",
+        "description": "HTTP access log: POST to login URL with 4xx/5xx status",
+        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"POST\s+\S*(?:/login|/signin|/sign_in|/auth|/user/login|/api/v\d+/auth)\s+HTTP/\S+\"\s+(?:4[0-9]{2}|5[0-9]{2})\s",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "npm_proxy",
+        "description": "Nginx Proxy Manager: custom log with [Client IP] and 4xx/5xx on login path",
+        "pattern": r"(?:4[0-9]{2}|5[0-9]{2}).*?\"(?:[^\"]*(?:/login|/signin|/sign_in|/auth|/user/login|/admin|/identity/connect/token|/api/v\d+/auth)[^\"]*)\"\s+\[Client\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+]
+
+
+class RulesManager:
+    """Manages detection rules: load/save from JSON, CRUD, factory reset."""
+
+    def __init__(self):
+        self._rules: list = self._load()
+        self._apply()
+
+    def _load(self) -> list:
+        if Path(RULES_FILE).exists():
+            try:
+                with open(RULES_FILE) as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    return data
+            except Exception as e:
+                log.error("Error loading rules file: %s — using defaults", e)
+        return [r.copy() for r in DEFAULT_RULE_DEFS]
+
+    def _apply(self):
+        """Recompile all enabled rules into the global PATTERNS dict."""
+        new_patterns: dict = {}
+        for rule in self._rules:
+            if not rule.get("enabled", True):
+                continue
+            try:
+                flags = 0
+                for f in rule.get("flags", "").split("|"):
+                    f = f.strip().upper()
+                    if f == "IGNORECASE":
+                        flags |= re.IGNORECASE
+                    elif f == "MULTILINE":
+                        flags |= re.MULTILINE
+                new_patterns[rule["id"]] = re.compile(rule["pattern"], flags)
+            except re.error as e:
+                log.warning("Rule '%s' has invalid regex — skipped: %s", rule["id"], e)
+        PATTERNS.clear()
+        PATTERNS.update(new_patterns)
+        log.info("Detection rules loaded: %d active", len(PATTERNS))
+
+    def save(self):
+        try:
+            with open(RULES_FILE, "w") as f:
+                json.dump(self._rules, f, indent=2)
+        except Exception as e:
+            log.error("Error saving rules: %s", e)
+
+    def get_all(self) -> list:
+        return [dict(r) for r in self._rules]
+
+    def get(self, rule_id: str) -> Optional[dict]:
+        return next((r for r in self._rules if r["id"] == rule_id), None)
+
+    def upsert(self, data: dict) -> tuple:
+        """Create or update a rule. Returns (ok, error_string)."""
+        rule_id = str(data.get("id", "")).strip()
+        if not rule_id:
+            return False, "id required"
+        pattern_str = str(data.get("pattern", "")).strip()
+        if not pattern_str:
+            return False, "pattern required"
+        flags_str = str(data.get("flags", "")).strip()
+        try:
+            flags = 0
+            for f in flags_str.split("|"):
+                f = f.strip().upper()
+                if f == "IGNORECASE":
+                    flags |= re.IGNORECASE
+                elif f == "MULTILINE":
+                    flags |= re.MULTILINE
+            re.compile(pattern_str, flags)
+        except re.error as e:
+            return False, f"invalid regex: {e}"
+        existing = self.get(rule_id)
+        if existing:
+            existing["description"] = data.get("description", existing.get("description", ""))
+            existing["pattern"] = pattern_str
+            existing["flags"] = flags_str
+            existing["enabled"] = bool(data.get("enabled", existing.get("enabled", True)))
+        else:
+            self._rules.append({
+                "id": rule_id,
+                "description": data.get("description", ""),
+                "pattern": pattern_str,
+                "flags": flags_str,
+                "enabled": bool(data.get("enabled", True)),
+            })
+        self.save()
+        self._apply()
+        return True, None
+
+    def delete(self, rule_id: str) -> bool:
+        before = len(self._rules)
+        self._rules = [r for r in self._rules if r["id"] != rule_id]
+        if len(self._rules) < before:
+            self.save()
+            self._apply()
+            return True
+        return False
+
+    def reset(self):
+        """Restore factory defaults and delete the saved rules file."""
+        self._rules = [r.copy() for r in DEFAULT_RULE_DEFS]
+        try:
+            Path(RULES_FILE).unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._apply()
+        log.info("Rules reset to factory defaults")
 
 URL_RE = re.compile(r"URL:\s*'([^']*)'")
 
@@ -999,6 +1128,7 @@ class BanManager:
     def __init__(self, config: Config):
         self.config = config
         self._bans: dict = {}
+        self._evidence: dict = {}   # ip -> list of event dicts
         self._lock = asyncio.Lock()
         self._load()
 
@@ -1049,7 +1179,7 @@ class BanManager:
             log.error("Error writing ip_bans.yaml: %s", e)
 
     async def ban(self, ip, reason="auto", manual=False, attempts=0,
-                  duration_minutes=None, source="") -> bool:
+                  duration_minutes=None, source="", evidence=None) -> bool:
         if self.config.is_whitelisted(ip):
             log.info("IP %s is whitelisted — skipping ban", ip)
             return False
@@ -1066,15 +1196,21 @@ class BanManager:
                 "attempt_count": attempts,
                 "source": source,
             }
+            if evidence is not None:
+                self._evidence[ip] = evidence
             await self._flush()
         log.info("Banned %s for %d min — %s", ip, dur, reason)
         return True
+
+    def get_evidence(self, ip: str) -> list:
+        return self._evidence.get(ip, [])
 
     async def unban(self, ip: str) -> bool:
         async with self._lock:
             if ip not in self._bans:
                 return False
             del self._bans[ip]
+            self._evidence.pop(ip, None)
             await self._flush()
         log.info("Unbanned %s", ip)
         return True
@@ -1182,6 +1318,7 @@ class Detector:
         self.bans = bans
         self.alerts = alerts
         self._windows: dict = defaultdict(deque)
+        self._ip_events: dict = defaultdict(lambda: deque(maxlen=50))
         self._events: deque = deque(maxlen=500)
         self._total_attempts = 0
         self._total_bans = 0
@@ -1200,20 +1337,26 @@ class Detector:
         self.alerts.record(source_id, source_name, ip)
         banned_now = False
 
+        event = {
+            "time": now.isoformat(), "ip": ip,
+            "source_id": source_id, "source_name": source_name,
+            "url": url, "pattern": pattern,
+        }
+        self._ip_events[ip].appendleft(event)
+
         if len(dq) >= self.config.max_attempts and not self.bans.is_banned(ip):
-            ok = await self.bans.ban(ip, reason="auto", attempts=len(dq), source=source_id)
+            evidence = list(self._ip_events[ip])
+            ok = await self.bans.ban(ip, reason="auto", attempts=len(dq),
+                                     source=source_id, evidence=evidence)
             if ok:
                 self._total_bans += 1
                 banned_now = True
                 dq.clear()
 
-        self._events.appendleft({
-            "time": now.isoformat(), "ip": ip,
-            "source_id": source_id, "source_name": source_name,
-            "url": url, "pattern": pattern,
-            "count": len(dq) if not banned_now else self.config.max_attempts,
-            "banned": banned_now,
-        })
+        full_event = dict(event)
+        full_event["count"] = len(dq) if not banned_now else self.config.max_attempts
+        full_event["banned"] = banned_now
+        self._events.appendleft(full_event)
         log.warning(
             "Failed login from %s via %s (%d/%d)%s",
             ip, source_name,
@@ -1431,7 +1574,8 @@ def _index_html() -> str:
     return _INDEX_HTML
 
 
-def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.Application:
+def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa: PLR0915
+              rules_mgr=None) -> web.Application:
     app = web.Application()
 
     async def handle_index(req):
@@ -1573,6 +1717,81 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
             return web.json_response(list(scanner.unmatched_lines))
         return web.json_response([])
 
+    # --- Ban evidence ---
+    async def handle_ban_evidence(req):
+        ip = req.match_info["ip"]
+        return web.json_response(bans.get_evidence(ip))
+
+    # --- Rules management ---
+    async def handle_get_rules(req):
+        if rules_mgr is None:
+            return web.json_response([])
+        return web.json_response(rules_mgr.get_all())
+
+    async def handle_post_rule(req):
+        if rules_mgr is None:
+            return web.json_response({"ok": False, "error": "rules_mgr not available"}, status=500)
+        try:
+            data = await req.json()
+            ok, err = rules_mgr.upsert(data)
+            if ok:
+                return web.json_response({"ok": True})
+            return web.json_response({"ok": False, "error": err}, status=400)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def handle_put_rule(req):
+        if rules_mgr is None:
+            return web.json_response({"ok": False, "error": "rules_mgr not available"}, status=500)
+        try:
+            data = await req.json()
+            data["id"] = req.match_info["id"]
+            ok, err = rules_mgr.upsert(data)
+            if ok:
+                return web.json_response({"ok": True})
+            return web.json_response({"ok": False, "error": err}, status=400)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def handle_delete_rule(req):
+        if rules_mgr is None:
+            return web.json_response({"ok": False, "error": "rules_mgr not available"}, status=500)
+        rule_id = req.match_info["id"]
+        ok = rules_mgr.delete(rule_id)
+        if ok:
+            return web.json_response({"ok": True})
+        return web.json_response({"ok": False, "error": "rule not found"}, status=404)
+
+    async def handle_reset_rules(req):
+        if rules_mgr is None:
+            return web.json_response({"ok": False, "error": "rules_mgr not available"}, status=500)
+        rules_mgr.reset()
+        return web.json_response({"ok": True, "rules": rules_mgr.get_all()})
+
+    async def handle_test_rule(req):
+        """Test a regex pattern against a sample log line."""
+        try:
+            data = await req.json()
+            pattern_str = data.get("pattern", "")
+            flags_str = data.get("flags", "")
+            line = data.get("line", "")
+            flags = 0
+            for f in flags_str.split("|"):
+                f = f.strip().upper()
+                if f == "IGNORECASE":
+                    flags |= re.IGNORECASE
+                elif f == "MULTILINE":
+                    flags |= re.MULTILINE
+            compiled = re.compile(pattern_str, flags)
+            m = compiled.search(line)
+            if m:
+                return web.json_response({"match": True, "groups": list(m.groups())})
+            return web.json_response({"match": False, "groups": []})
+        except re.error as e:
+            return web.json_response({"ok": False, "error": f"Invalid regex: {e}"}, status=400)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/stats", handle_stats)
     app.router.add_get("/api/events", handle_events)
@@ -1595,6 +1814,13 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
     app.router.add_get("/api/config", handle_get_config)
     app.router.add_post("/api/config", handle_post_config)
     app.router.add_get("/api/health", handle_health)
+    app.router.add_get("/api/bans/{ip}/evidence", handle_ban_evidence)
+    app.router.add_get("/api/rules", handle_get_rules)
+    app.router.add_post("/api/rules", handle_post_rule)
+    app.router.add_put("/api/rules/{id}", handle_put_rule)
+    app.router.add_delete("/api/rules/{id}", handle_delete_rule)
+    app.router.add_post("/api/rules/reset", handle_reset_rules)
+    app.router.add_post("/api/rules/test", handle_test_rule)
 
     return app
 
@@ -1603,6 +1829,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None) -> web.A
 # Entry point
 # ---------------------------------------------------------------------------
 async def main():
+    rules_mgr = RulesManager()
     state = PersistentState()
     config = Config(state)
     bans = BanManager(config)
@@ -1613,7 +1840,8 @@ async def main():
 
     log.info("HA Guardian %s starting on port %d", VERSION, PORT)
 
-    app = build_app(config, bans, detector, source_mgr, alert_tracker, scanner)
+    app = build_app(config, bans, detector, source_mgr, alert_tracker, scanner,
+                    rules_mgr=rules_mgr)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)

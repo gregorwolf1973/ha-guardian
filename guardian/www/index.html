@@ -223,6 +223,7 @@
   <button class="tab-btn" data-tab="alerts">Alerts</button>
   <button class="tab-btn" data-tab="whitelist">Whitelist</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
+  <button class="tab-btn" data-tab="rules">Rules</button>
   <button class="tab-btn" data-tab="debug">Debug</button>
 </div>
 
@@ -271,10 +272,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>IP Address</th><th>Banned At</th><th>Expires In</th><th>Source</th><th>Reason</th><th>Attempts</th><th>Type</th><th>Action</th></tr>
+        <tr><th>IP Address</th><th>Banned At</th><th>Expires In</th><th>Source</th><th>Reason</th><th>Attempts</th><th>Type</th><th>Details</th><th>Action</th></tr>
       </thead>
       <tbody id="bansTable">
-        <tr class="empty-row"><td colspan="8">No blocked IPs</td></tr>
+        <tr class="empty-row"><td colspan="9">No blocked IPs</td></tr>
       </tbody>
     </table>
   </div>
@@ -304,11 +305,18 @@
 <!-- ALERTS -->
 <div id="tab-alerts" class="tab-pane">
   <div class="section-header">
-    <h2>Alerts per Source</h2>
+    <h2>Failed Login Attempts</h2>
     <button class="btn btn-ghost btn-sm" onclick="loadAlerts()">↻ Refresh</button>
   </div>
-  <div id="alertsList">
-    <div class="alert-card"><p style="color:var(--text-muted);text-align:center">No alerts</p></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Source</th><th>IP Address</th><th>URL / Pattern</th><th>Details</th></tr>
+      </thead>
+      <tbody id="alertsTable">
+        <tr class="empty-row"><td colspan="5">No alerts in the configured window</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -385,6 +393,28 @@
   </form>
 </div>
 
+<!-- RULES -->
+<div id="tab-rules" class="tab-pane">
+  <div class="section-header">
+    <h2>Detection Rules</h2>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-primary btn-sm" onclick="showRuleEditor(null)">+ Add Rule</button>
+      <button class="btn btn-danger btn-sm" onclick="resetRules()">Factory Reset</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadRules()">↻ Refresh</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Active</th><th>ID</th><th>Description</th><th>Pattern</th><th>Flags</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="rulesTable">
+        <tr class="empty-row"><td colspan="6">No rules loaded</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <!-- DEBUG -->
 <div id="tab-debug" class="tab-pane">
   <div class="section-header">
@@ -418,10 +448,57 @@
   </div>
 </div>
 
+<!-- EVIDENCE MODAL -->
+<div id="evidenceModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closeEvidence()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:900px;margin:0 auto;max-height:90vh;display:flex;flex-direction:column">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <h3 style="font-size:14px">Ban Evidence: <span id="evidenceIp" class="mono"></span></h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeEvidence()">✕ Close</button>
+    </div>
+    <div style="padding:14px 18px;overflow:auto;flex:1;max-height:70vh">
+      <table style="width:100%">
+        <thead><tr><th>Time</th><th>Source</th><th>URL / Pattern</th></tr></thead>
+        <tbody id="evidenceTable"><tr><td colspan="3" style="text-align:center;color:var(--text-muted)">No evidence stored</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- RULE EDITOR MODAL -->
+<div id="ruleModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closeRuleModal()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:700px;margin:0 auto">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <h3 id="ruleModalTitle" style="font-size:14px">Edit Rule</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeRuleModal()">✕ Close</button>
+    </div>
+    <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+      <div class="field"><label>Rule ID <span style="color:var(--text-muted);font-size:11px">(snake_case, unique)</span></label>
+        <input id="ruleId" type="text" placeholder="e.g. my_app_fail" style="width:100%"></div>
+      <div class="field"><label>Description</label>
+        <input id="ruleDesc" type="text" placeholder="Short description" style="width:100%"></div>
+      <div class="field"><label>Regex Pattern <span style="color:var(--text-muted);font-size:11px">(group 1 must capture the IP)</span></label>
+        <textarea id="rulePattern" rows="3" style="width:100%;font-family:monospace;font-size:12px;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px"></textarea></div>
+      <div class="field"><label>Flags <span style="color:var(--text-muted);font-size:11px">(e.g. IGNORECASE, leave empty for none)</span></label>
+        <input id="ruleFlags" type="text" placeholder="IGNORECASE" style="width:100%"></div>
+      <div class="field"><label>Test Line <span style="color:var(--text-muted);font-size:11px">(paste a sample log line to test)</span></label>
+        <div style="display:flex;gap:6px">
+          <input id="ruleTestLine" type="text" placeholder="Paste a log line here…" style="flex:1">
+          <button class="btn btn-ghost btn-sm" onclick="testRule()">Test</button>
+        </div>
+        <div id="ruleTestResult" style="margin-top:6px;font-size:12px"></div>
+      </div>
+      <div class="field" style="flex-direction:row;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="closeRuleModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveRule()">Save Rule</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
-const TABS = ['dashboard','bans','sources','alerts','whitelist','settings','debug'];
+const TABS = ['dashboard','bans','sources','alerts','whitelist','settings','rules','debug'];
 let activeTab = 'dashboard';
 
 // ---- Tabs ----
@@ -442,6 +519,7 @@ function refreshTab(tab) {
   else if (tab === 'alerts') loadAlerts();
   else if (tab === 'whitelist') loadWhitelist();
   else if (tab === 'settings') loadSettings();
+  else if (tab === 'rules') loadRules();
   else if (tab === 'debug') loadUnmatched();
 }
 
@@ -537,6 +615,7 @@ async function loadBans() {
       <td>${esc(b.reason || '–')}</td>
       <td>${b.attempt_count || '–'}</td>
       <td>${b.manual ? '<span class="badge badge-info">Manual</span>' : '<span class="badge badge-danger">Auto</span>'}</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="showEvidence('${esc(b.ip)}')">Details</button></td>
       <td><button class="btn btn-ghost btn-sm" onclick="unbanIP('${esc(b.ip)}')">Unban</button></td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -624,29 +703,34 @@ async function previewAddon(id, name) {
 // ---- Alerts ----
 async function loadAlerts() {
   try {
-    const alerts = await api('GET', 'api/alerts');
-    const el = document.getElementById('alertsList');
-    if (!alerts.length) {
-      el.innerHTML = '<div class="alert-card"><p style="color:var(--text-muted);text-align:center">No alerts in the configured window</p></div>';
+    const events = await api('GET', 'api/events');
+    const tb = document.getElementById('alertsTable');
+    if (!events.length) {
+      tb.innerHTML = '<tr class="empty-row"><td colspan="5">No alerts in the configured window</td></tr>';
       return;
     }
-    el.innerHTML = alerts.map(a => {
-      const topIps = (a.top_ips || []).map(t =>
-        `<span class="ip-chip">${esc(t.ip)}<span class="cnt">x${t.count}</span></span>`
-      ).join('');
-      return `<div class="alert-card">
-        <div class="alert-card-header">
-          <h3>${esc(a.source_name)}</h3>
-          <span class="countdown">Last: ${relTime(a.last_attempt)} &middot; Window: ${a.window_hours}h</span>
-        </div>
-        <div>
-          <span class="alert-stat"><span class="num">${a.attempts}</span> <span class="lbl">Attempts</span></span>
-          <span class="alert-stat"><span class="num" style="color:var(--danger)">${a.unique_ips}</span> <span class="lbl">Unique IPs</span></span>
-        </div>
-        ${topIps ? '<div class="top-ips" style="margin-top:8px"><span style="font-size:11px;color:var(--text-muted);margin-right:6px">Top IPs:</span>' + topIps + '</div>' : ''}
-      </div>`;
-    }).join('');
+    tb.innerHTML = events.map((e, i) => `<tr>
+      <td class="countdown">${relTime(e.time)}</td>
+      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
+      <td class="mono">${esc(e.ip)}</td>
+      <td style="font-size:11px;color:var(--text-muted);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.url || e.pattern || '')}">${esc(e.url || e.pattern || '–')}</td>
+      <td><button class="btn btn-ghost btn-sm" onclick="showEventDetail(${i})">Details</button></td>
+    </tr>`).join('');
+    window._alertEvents = events;
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+function showEventDetail(idx) {
+  const e = (window._alertEvents || [])[idx];
+  if (!e) return;
+  document.getElementById('evidenceIp').textContent = e.ip;
+  const tb = document.getElementById('evidenceTable');
+  tb.innerHTML = `<tr>
+    <td>${esc(e.time)}</td>
+    <td>${esc(e.source_name || '–')}</td>
+    <td style="font-size:11px;word-break:break-all">${esc(e.url || e.pattern || '–')}</td>
+  </tr>`;
+  document.getElementById('evidenceModal').style.display = 'block';
 }
 
 // ---- Whitelist ----
@@ -740,6 +824,141 @@ async function loadUnmatched() {
       <td><code style="font-size:11px;color:var(--warn);word-break:break-all">${esc(l.line)}</code></td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+// ---- Evidence Modal ----
+async function showEvidence(ip) {
+  document.getElementById('evidenceIp').textContent = ip;
+  const tb = document.getElementById('evidenceTable');
+  tb.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">Loading…</td></tr>';
+  document.getElementById('evidenceModal').style.display = 'block';
+  try {
+    const ev = await api('GET', 'api/bans/' + encodeURIComponent(ip) + '/evidence');
+    if (!ev.length) {
+      tb.innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">No evidence stored (ban loaded from disk or manual)</td></tr>';
+      return;
+    }
+    tb.innerHTML = ev.map(e => `<tr>
+      <td class="countdown" style="white-space:nowrap">${relTime(e.time)}</td>
+      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
+      <td style="font-size:11px;word-break:break-all;color:var(--text-muted)">${esc(e.url || e.pattern || '–')}</td>
+    </tr>`).join('');
+  } catch (err) { tb.innerHTML = '<tr><td colspan="3" style="color:var(--danger)">' + esc(err.message) + '</td></tr>'; }
+}
+function closeEvidence() { document.getElementById('evidenceModal').style.display = 'none'; }
+
+// ---- Rules ----
+let _editingRuleId = null;
+
+async function loadRules() {
+  try {
+    const rules = await api('GET', 'api/rules');
+    const tb = document.getElementById('rulesTable');
+    if (!rules.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No rules loaded</td></tr>'; return; }
+    tb.innerHTML = rules.map(r => `<tr>
+      <td>
+        <label class="toggle">
+          <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleRule('${esc(r.id)}', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </td>
+      <td style="font-size:11px;font-family:monospace">${esc(r.id)}</td>
+      <td style="font-size:12px">${esc(r.description || '–')}</td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-family:monospace;color:var(--text-muted)" title="${esc(r.pattern)}">${esc(r.pattern)}</td>
+      <td style="font-size:11px">${esc(r.flags || '–')}</td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" onclick="showRuleEditor(${JSON.stringify(r).replace(/"/g,'&quot;')})">Edit</button>
+        <button class="btn btn-ghost btn-sm" onclick="copyRule(${JSON.stringify(r).replace(/"/g,'&quot;')})">Copy</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRule('${esc(r.id)}')">Delete</button>
+      </td>
+    </tr>`).join('');
+  } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+async function toggleRule(id, enabled) {
+  try {
+    const rules = await api('GET', 'api/rules');
+    const r = rules.find(x => x.id === id);
+    if (!r) return;
+    r.enabled = enabled;
+    await api('PUT', 'api/rules/' + encodeURIComponent(id), r);
+    toast((enabled ? 'Enabled' : 'Disabled') + ' rule: ' + id, 'ok');
+  } catch (e) { toast(e.message, 'err'); loadRules(); }
+}
+
+function showRuleEditor(rule) {
+  _editingRuleId = rule ? rule.id : null;
+  document.getElementById('ruleModalTitle').textContent = rule ? 'Edit Rule: ' + rule.id : 'Add Rule';
+  document.getElementById('ruleId').value = rule ? rule.id : '';
+  document.getElementById('ruleId').disabled = !!rule;
+  document.getElementById('ruleDesc').value = rule ? (rule.description || '') : '';
+  document.getElementById('rulePattern').value = rule ? rule.pattern : '';
+  document.getElementById('ruleFlags').value = rule ? (rule.flags || '') : 'IGNORECASE';
+  document.getElementById('ruleTestLine').value = '';
+  document.getElementById('ruleTestResult').textContent = '';
+  document.getElementById('ruleModal').style.display = 'block';
+}
+
+function copyRule(rule) {
+  const copy = Object.assign({}, rule, { id: rule.id + '_copy' });
+  showRuleEditor(null);
+  document.getElementById('ruleId').value = copy.id;
+  document.getElementById('ruleDesc').value = copy.description || '';
+  document.getElementById('rulePattern').value = copy.pattern;
+  document.getElementById('ruleFlags').value = copy.flags || '';
+  _editingRuleId = null;
+}
+
+function closeRuleModal() { document.getElementById('ruleModal').style.display = 'none'; }
+
+async function saveRule() {
+  const id = document.getElementById('ruleId').value.trim();
+  if (!id) { toast('Rule ID required', 'err'); return; }
+  const data = {
+    id,
+    description: document.getElementById('ruleDesc').value.trim(),
+    pattern: document.getElementById('rulePattern').value.trim(),
+    flags: document.getElementById('ruleFlags').value.trim(),
+    enabled: true,
+  };
+  try {
+    if (_editingRuleId) {
+      await api('PUT', 'api/rules/' + encodeURIComponent(_editingRuleId), data);
+    } else {
+      await api('POST', 'api/rules', data);
+    }
+    toast('Rule saved: ' + id, 'ok');
+    closeRuleModal();
+    loadRules();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function deleteRule(id) {
+  if (!confirm('Delete rule "' + id + '"?')) return;
+  try { await api('DELETE', 'api/rules/' + encodeURIComponent(id)); toast('Deleted: ' + id, 'ok'); loadRules(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+async function resetRules() {
+  if (!confirm('Reset all rules to factory defaults? Custom rules will be lost.')) return;
+  try { await api('POST', 'api/rules/reset'); toast('Rules reset to defaults', 'ok'); loadRules(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+async function testRule() {
+  const pattern = document.getElementById('rulePattern').value.trim();
+  const flags = document.getElementById('ruleFlags').value.trim();
+  const line = document.getElementById('ruleTestLine').value;
+  const res = document.getElementById('ruleTestResult');
+  if (!pattern) { res.innerHTML = '<span style="color:var(--warn)">Enter a pattern first</span>'; return; }
+  try {
+    const data = await api('POST', 'api/rules/test', { pattern, flags, line });
+    if (data.match) {
+      res.innerHTML = '<span style="color:var(--success)">✓ Match — IP captured: ' + esc(data.groups[0] || '(no group)') + '</span>';
+    } else {
+      res.innerHTML = '<span style="color:var(--danger)">✗ No match</span>';
+    }
+  } catch (e) { res.innerHTML = '<span style="color:var(--danger)">' + esc(e.message) + '</span>'; }
 }
 
 // ---- Init & Auto-Refresh ----
