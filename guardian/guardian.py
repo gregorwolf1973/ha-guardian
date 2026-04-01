@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.17.1"
+VERSION = "1.17.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -773,6 +773,9 @@ class SourceManager:
         for sid, s in self._sources.items():
             if s["type"] != "file":
                 continue
+            # Never remove manually-added custom sources
+            if s.get("custom"):
+                continue
             path = s.get("path", "")
             p = Path(path)
             # Remove if file doesn't exist
@@ -949,10 +952,10 @@ class SourceManager:
                 addon_id = "__core__"
 
             # Ungrouped auto-discovered sources → skip
-            # Only manually-added sources (custom=True flag) appear in __custom__ group
+            # Manually-added (custom=True) sources each get their own group (keyed by sid)
             if not addon_id:
                 if src.get("custom"):
-                    addon_id = "__custom__"
+                    addon_id = src["id"]  # unique per file
                 else:
                     continue
 
@@ -965,6 +968,7 @@ class SourceManager:
                     "source_count": 0,
                     "file_count": 0,
                     "docker_log": False,
+                    "custom": src.get("custom", False),
                     "last_modified": None,
                     "total_size": 0,
                     "sources": [],
@@ -996,8 +1000,8 @@ class SourceManager:
             if not g["name"]:
                 if addon_id == "__core__":
                     g["name"] = "Home Assistant Core"
-                elif addon_id == "__custom__":
-                    g["name"] = "Custom File Sources"
+                elif src.get("custom"):
+                    g["name"] = Path(src.get("path", src["id"])).name
                 else:
                     # Try to get clean name from the source name
                     sname = src.get("name", addon_id)
@@ -1019,6 +1023,7 @@ class SourceManager:
                 "docker_log": g["docker_log"],
                 "last_modified": g["last_modified"],
                 "total_size": g["total_size"],
+                "custom": g.get("custom", False),
             })
 
         # Sort: enabled first, then by name
@@ -1040,7 +1045,7 @@ class SourceManager:
                     src_addon = "__core__"
                 else:
                     extracted = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
-                    src_addon = extracted if extracted else ("__custom__" if src.get("custom") else None)
+                    src_addon = extracted if extracted else (src["id"] if src.get("custom") else None)
             if src_addon == addon_id:
                 src["enabled"] = enabled
                 found = True
@@ -1093,6 +1098,8 @@ class SourceManager:
             elif src["type"] == "file":
                 if addon_id == "__core__" and src.get("path") == self.config.log_file:
                     src_addon = "__core__"
+                elif src.get("custom"):
+                    src_addon = src["id"]  # custom files: match by own sid
                 else:
                     src_addon = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
             if src_addon != addon_id:

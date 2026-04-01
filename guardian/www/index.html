@@ -648,7 +648,7 @@ async function loadSources() {
     const tb = document.getElementById('sourcesTable');
     if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No addons discovered</td></tr>'; return; }
     tb.innerHTML = addons.map(a => {
-      const isCustom = a.id === '__custom__';
+      const isCustom = !!a.custom;
       const stateLabel = isCustom
         ? '<span class="badge badge-muted">Custom</span>'
         : a.state === 'started'
@@ -662,7 +662,7 @@ async function loadSources() {
       const size = a.total_size ? fmtSize(a.total_size) : '–';
       const aid = esc(a.id);
       const aname = (a.name || '').replace(/'/g, "\\'");
-      const rowStyle = isCustom ? ' style="border-top:2px solid var(--primary);opacity:0.9"' : '';
+      const rowStyle = isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
       return `<tr${rowStyle}>
         <td>
           <label class="toggle">
@@ -670,7 +670,7 @@ async function loadSources() {
             <span class="slider"></span>
           </label>
         </td>
-        <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--text-muted)">(manually added)</span>' : ''}</td>
+        <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : ''}</td>
         <td>${stateLabel}</td>
         <td style="font-size:12px">${srcInfo.join(' + ') || '–'}</td>
         <td class="countdown">${lastMod}</td>
