@@ -8,7 +8,7 @@ import os
 import re
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from fnmatch import fnmatch
+from fnmatch import fnmatch, translate as fnmatch_translate
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Optional
@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.3"
+VERSION = "1.16.4"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1740,6 +1740,41 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return web.json_response(list(scanner.unmatched_lines))
         return web.json_response([])
 
+    # --- File search across all Guardian-accessible directories ---
+    _SEARCH_ROOTS = ["/config", "/share", "/addon_configs", "/media", "/data"]
+
+    async def handle_find_file(req):
+        pattern = req.rel_url.query.get("pattern", "").strip()
+        if not pattern or len(pattern) < 2:
+            return web.json_response({"error": "pattern too short"}, status=400)
+        # Sanitise — no shell metacharacters
+        safe = re.compile(r'^[\w\-.*?]+$')
+        if not safe.match(pattern):
+            return web.json_response({"error": "invalid pattern"}, status=400)
+        results = []
+        pat_re = re.compile(fnmatch_translate(pattern), re.IGNORECASE)
+        for root in _SEARCH_ROOTS:
+            if not Path(root).exists():
+                continue
+            for dirpath, _dirs, files in os.walk(root, followlinks=False):
+                for fname in files:
+                    if pat_re.match(fname):
+                        full = os.path.join(dirpath, fname)
+                        try:
+                            st = os.stat(full)
+                            results.append({
+                                "path": full,
+                                "size": st.st_size,
+                                "mtime": datetime.fromtimestamp(st.st_mtime,
+                                                                tz=timezone.utc).isoformat(),
+                            })
+                        except OSError:
+                            results.append({"path": full, "size": None, "mtime": None})
+                if len(results) >= 200:
+                    break
+        results.sort(key=lambda x: x.get("mtime") or "", reverse=True)
+        return web.json_response(results)
+
     # --- Ban evidence ---
     async def handle_ban_evidence(req):
         ip = req.match_info["ip"]
@@ -1833,6 +1868,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/addons/toggle", handle_toggle_addon)
     app.router.add_post("/api/addons/preview", handle_preview_addon)
     app.router.add_get("/api/unmatched", handle_unmatched)
+    app.router.add_get("/api/find", handle_find_file)
     app.router.add_get("/api/alerts", handle_get_alerts)
     app.router.add_get("/api/config", handle_get_config)
     app.router.add_post("/api/config", handle_post_config)

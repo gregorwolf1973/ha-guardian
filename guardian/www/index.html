@@ -420,6 +420,21 @@
 
 <!-- DEBUG -->
 <div id="tab-debug" class="tab-pane">
+  <div class="section-header" style="margin-bottom:10px">
+    <h2>File Search</h2>
+  </div>
+  <div class="add-row" style="margin-bottom:18px">
+    <div class="field">
+      <label>Filename pattern <span style="color:var(--text-muted);font-size:11px">(e.g. auth.log, *.log, snappy*)</span></label>
+      <input id="findPattern" type="text" placeholder="auth.log" style="width:220px"
+             onkeydown="if(event.key==='Enter')findFile()">
+    </div>
+    <div class="field" style="justify-content:flex-end">
+      <label>&nbsp;</label>
+      <button class="btn btn-primary btn-sm" onclick="findFile()">Search</button>
+    </div>
+    <div id="findResults" style="width:100%;margin-top:8px"></div>
+  </div>
   <div class="section-header">
     <h2>Unmatched Auth Lines</h2>
     <button class="btn btn-ghost btn-sm" onclick="loadUnmatched()">↻ Refresh</button>
@@ -826,6 +841,45 @@ async function previewSource(id, name) {
 }
 function closePreview() {
   document.getElementById('previewModal').style.display = 'none';
+}
+
+// ---- Debug / File Search ----
+async function findFile() {
+  const pattern = document.getElementById('findPattern').value.trim();
+  if (!pattern) return;
+  const el = document.getElementById('findResults');
+  el.innerHTML = '<span style="color:var(--text-muted);font-size:12px">Searching…</span>';
+  try {
+    const results = await api('GET', 'api/find?pattern=' + encodeURIComponent(pattern));
+    if (!results.length) {
+      el.innerHTML = '<span style="color:var(--text-muted);font-size:12px">No files found matching <strong>' + esc(pattern) + '</strong> in /config, /share, /addon_configs, /media, /data</span>';
+      return;
+    }
+    el.innerHTML = '<table style="width:100%;font-size:12px"><thead><tr><th>Path</th><th>Size</th><th>Modified</th><th>Preview</th></tr></thead><tbody>'
+      + results.map(r => `<tr>
+        <td class="mono" style="word-break:break-all">${esc(r.path)}</td>
+        <td style="white-space:nowrap">${r.size != null ? fmtSize(r.size) : '–'}</td>
+        <td class="countdown" style="white-space:nowrap">${r.mtime ? relTime(r.mtime) : '–'}</td>
+        <td><button class="btn btn-ghost btn-sm" onclick="previewFoundFile('${esc(r.path).replace(/'/g,'\\\'')}')">Preview</button></td>
+      </tr>`).join('')
+      + '</tbody></table>';
+  } catch (e) { el.innerHTML = '<span style="color:var(--danger);font-size:12px">' + esc(e.message) + '</span>'; }
+}
+
+async function previewFoundFile(path) {
+  document.getElementById('previewTitle').textContent = 'File: ' + path;
+  document.getElementById('previewContent').textContent = 'Loading…';
+  document.getElementById('previewModal').style.display = 'block';
+  try {
+    const data = await api('POST', 'api/sources/preview', { id: path, lines: 100 });
+    const lines = data.lines || [];
+    if (!lines.length) { document.getElementById('previewContent').textContent = '(empty or not accessible)'; return; }
+    document.getElementById('previewContent').innerHTML = lines.map(l => {
+      const el = esc(l);
+      return el.replace(/(login|auth|password|fail|denied|invalid|wrong|401|403|blocked|reject|credential|attempt|brute)/gi,
+        '<span style="color:var(--warn);font-weight:600">$1</span>');
+    }).join('\n');
+  } catch (e) { document.getElementById('previewContent').textContent = 'Error: ' + e.message; }
 }
 
 // ---- Debug / Unmatched ----
