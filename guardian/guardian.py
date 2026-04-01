@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.4"
+VERSION = "1.16.5"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1731,6 +1731,18 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         d = await req.json()
         sid = d.get("id", "")
         n = min(int(d.get("lines", 50)), 200)
+        # If sid looks like an absolute path and is not a known source ID,
+        # read the file directly (used by file-search preview).
+        if sid.startswith("/") and sid not in source_mgr._sources:
+            p = Path(sid)
+            if not p.exists():
+                return web.json_response({"lines": ["(file not found)"]})
+            try:
+                with open(p, errors="replace") as f:
+                    all_lines = f.readlines()
+                return web.json_response({"lines": [l.rstrip() for l in all_lines[-n:]]})
+            except Exception as e:
+                return web.json_response({"lines": [f"Error: {e}"]})
         lines = await source_mgr.preview_source(sid, n)
         return web.json_response({"lines": lines})
 
