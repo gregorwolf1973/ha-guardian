@@ -4,6 +4,12 @@
   <img src="guardian/logo.png" alt="HA Guardian Logo" width="400">
 </p>
 
+<p align="center">
+  <a href="https://buymeacoffee.com/gregorwolf1973">
+    <img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee">
+  </a>
+</p>
+
 **Brute-force-Schutz für Home Assistant** – überwacht Logs aller installierten Addons, erkennt fehlgeschlagene Anmeldeversuche und sperrt angreifende IPs automatisch.
 
 ---
