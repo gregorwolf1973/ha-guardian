@@ -236,7 +236,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>URL</th><th>Attempts</th><th>Status</th></tr>
+        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th></tr>
       </thead>
       <tbody id="eventsTable">
         <tr class="empty-row"><td colspan="6">No events yet</td></tr>
@@ -311,7 +311,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Time</th><th>Source</th><th>IP Address</th><th>URL / Pattern</th><th>Details</th></tr>
+        <tr><th>Time</th><th>Source</th><th>IP Address</th><th>Log Line</th><th>Details</th></tr>
       </thead>
       <tbody id="alertsTable">
         <tr class="empty-row"><td colspan="5">No alerts in the configured window</td></tr>
@@ -457,7 +457,7 @@
     </div>
     <div style="padding:14px 18px;overflow:auto;flex:1;max-height:70vh">
       <table style="width:100%">
-        <thead><tr><th>Time</th><th>Source</th><th>URL / Pattern</th></tr></thead>
+        <thead><tr><th>Time</th><th>Source</th><th>Log Line</th></tr></thead>
         <tbody id="evidenceTable"><tr><td colspan="3" style="text-align:center;color:var(--text-muted)">No evidence stored</td></tr></tbody>
       </table>
     </div>
@@ -593,9 +593,9 @@ async function loadDashboard() {
       <td class="countdown">${relTime(e.time)}</td>
       <td class="mono">${esc(e.ip)}</td>
       <td style="font-size:12px">${esc(e.source_name || '–')}</td>
-      <td class="mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc(e.url || '–')}</td>
       <td>${e.count}</td>
       <td>${e.banned ? '<span class="badge badge-danger">BANNED</span>' : '<span class="badge badge-warn">Attempt</span>'}</td>
+      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || '–')}</code></td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
@@ -713,7 +713,7 @@ async function loadAlerts() {
       <td class="countdown">${relTime(e.time)}</td>
       <td style="font-size:12px">${esc(e.source_name || '–')}</td>
       <td class="mono">${esc(e.ip)}</td>
-      <td style="font-size:11px;color:var(--text-muted);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.url || e.pattern || '')}">${esc(e.url || e.pattern || '–')}</td>
+      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || e.pattern || '–')}</code></td>
       <td><button class="btn btn-ghost btn-sm" onclick="showEventDetail(${i})">Details</button></td>
     </tr>`).join('');
     window._alertEvents = events;
@@ -728,7 +728,7 @@ function showEventDetail(idx) {
   tb.innerHTML = `<tr>
     <td>${esc(e.time)}</td>
     <td>${esc(e.source_name || '–')}</td>
-    <td style="font-size:11px;word-break:break-all">${esc(e.url || e.pattern || '–')}</td>
+    <td style="font-size:11px;word-break:break-all"><code>${esc(e.line || e.url || e.pattern || '–')}</code></td>
   </tr>`;
   document.getElementById('evidenceModal').style.display = 'block';
 }
@@ -779,7 +779,7 @@ async function saveSettings(ev) {
       alert_window_hours: parseInt(document.getElementById('cfgAlertHours').value),
       trusted_domains: domains,
     });
-    toast('Settings saved', 'ok'); loadStats();
+    toast('Settings saved', 'ok'); loadStats(); loadSettings();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 
@@ -840,8 +840,8 @@ async function showEvidence(ip) {
     }
     tb.innerHTML = ev.map(e => `<tr>
       <td class="countdown" style="white-space:nowrap">${relTime(e.time)}</td>
-      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
-      <td style="font-size:11px;word-break:break-all;color:var(--text-muted)">${esc(e.url || e.pattern || '–')}</td>
+      <td style="font-size:12px;white-space:nowrap">${esc(e.source_name || '–')}</td>
+      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || e.pattern || '–')}</code></td>
     </tr>`).join('');
   } catch (err) { tb.innerHTML = '<tr><td colspan="3" style="color:var(--danger)">' + esc(err.message) + '</td></tr>'; }
 }

@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.0"
+VERSION = "1.16.1"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1324,7 +1324,7 @@ class Detector:
         self._total_bans = 0
         self._started = datetime.now(timezone.utc)
 
-    async def record(self, ip, source_id, source_name, url="", pattern=""):
+    async def record(self, ip, source_id, source_name, url="", pattern="", line=""):
         if self.config.is_whitelisted(ip):
             return
         now = datetime.now(timezone.utc)
@@ -1340,7 +1340,7 @@ class Detector:
         event = {
             "time": now.isoformat(), "ip": ip,
             "source_id": source_id, "source_name": source_name,
-            "url": url, "pattern": pattern,
+            "url": url, "pattern": pattern, "line": line,
         }
         self._ip_events[ip].appendleft(event)
 
@@ -1413,11 +1413,16 @@ class LogScanner:
             log.info("  Active: [%s] %s (%s)", s.get("type"), s.get("name"),
                      s.get("path", s.get("slug", "")))
 
+        _addon_tick = 0
+        _ADDON_POLL_INTERVAL = 5  # poll addon Docker logs every N seconds
         while True:
             for src in self.source_mgr.get_enabled("file"):
                 await self._scan_file(src)
-            for src in self.source_mgr.get_enabled("addon"):
-                await self._poll_addon(src)
+            _addon_tick += 1
+            if _addon_tick >= _ADDON_POLL_INTERVAL:
+                _addon_tick = 0
+                for src in self.source_mgr.get_enabled("addon"):
+                    await self._poll_addon(src)
             await asyncio.sleep(1)
 
     def _calc_initial_pos(self, path: str, stat_result) -> int:
@@ -1543,7 +1548,7 @@ class LogScanner:
             await self.detector.record(
                 ip=ip, source_id=src["id"],
                 source_name=src.get("name", src["id"]),
-                url=url, pattern=pattern_name,
+                url=url, pattern=pattern_name, line=line,
             )
         elif _is_auth_related(line):
             # Line looks auth-related but no pattern matched — log for debugging
