@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.16.6"
+VERSION = "1.16.7"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -707,7 +707,7 @@ class SourceManager:
                     data = json.load(f)
                 for s in data.get("sources", []):
                     self._sources[s["id"]] = s
-                log.info("Loaded %d log source(s) from disk", len(self._sources))
+                log.debug("Loaded %d log source(s) from disk", len(self._sources))
         except Exception as e:
             log.warning("Could not load sources: %s", e)
 
@@ -750,7 +750,7 @@ class SourceManager:
                             slug = addon.get("slug", "")
                             addon_map[slug] = addon.get("name", slug)
                             addon_states[slug] = addon.get("state", "")
-                        log.info("Fetched %d addons from Supervisor API", len(addon_map))
+                        log.debug("Fetched %d addons from Supervisor API", len(addon_map))
                     else:
                         body = await resp.text()
                         log.warning("Supervisor API /addons returned %d: %s", resp.status, body[:200])
@@ -794,7 +794,7 @@ class SourceManager:
         for sid in stale:
             name = self._sources[sid].get("name", sid)
             del self._sources[sid]
-            log.info("Removed stale/duplicate source: %s", name)
+            log.debug("Removed stale/duplicate source: %s", name)
 
         # 1) Scan all mapped directories for recent log files (recursive)
         for base_dir in LOG_SCAN_DIRS:
@@ -837,7 +837,7 @@ class SourceManager:
 
                 self._sources[sid] = source_entry
                 discovered += 1
-                log.info("Discovered log: %s (%s, modified %s)", name, path, mtime_iso)
+                log.debug("Discovered log: %s (%s, modified %s)", name, path, mtime_iso)
 
         # 2) Discover HA addon docker logs via Supervisor API
         for slug, display_name in addon_map.items():
@@ -857,8 +857,8 @@ class SourceManager:
                     "enabled": enabled,
                 }
                 discovered += 1
-                log.info("Discovered addon docker log: %s (%s)%s",
-                         display_name, slug, " [auto-enabled]" if enabled else "")
+                log.debug("Discovered addon docker log: %s (%s)%s",
+                          display_name, slug, " [auto-enabled]" if enabled else "")
             else:
                 self._sources[sid]["state"] = state
                 self._sources[sid]["name"] = f"Docker: {display_name}"
@@ -875,12 +875,12 @@ class SourceManager:
                 "enabled": True,  # Always enabled by default
             }
             discovered += 1
-            log.info("Added HA Core log source (polls /core/logs via Supervisor API)")
+            log.debug("Added HA Core log source (polls /core/logs via Supervisor API)")
         else:
             self._sources[core_sid]["state"] = "started"
 
         if discovered:
-            log.info("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
+            log.debug("Discovered %d new source(s) — total: %d", discovered, len(self._sources))
         self._save()
 
     def _is_addon_enabled(self, addon_slug: str) -> bool:
@@ -1472,7 +1472,7 @@ class LogScanner:
                 # Use file mtime and ctime to guess the portion within the time window.
                 initial_pos = self._calc_initial_pos(path, stat)
                 self._file_state[path] = {"inode": inode, "pos": initial_pos}
-                log.info("First scan of %s — reading from pos %d/%d (window=%dh)",
+                log.debug("First scan of %s — reading from pos %d/%d (window=%dh)",
                          path, initial_pos, size, self.config.alert_window_hours)
                 state = self._file_state[path]
 
@@ -1517,7 +1517,7 @@ class LogScanner:
             if last_len is None:
                 # First poll: read all available text (Docker logs are typically not huge)
                 initial_pos = max(0, len(text) - 5 * 1024 * 1024)  # cap at 5MB
-                log.info("First poll of addon %s — reading from pos %d/%d", slug, initial_pos, len(text))
+                log.debug("First poll of addon %s — reading from pos %d/%d", slug, initial_pos, len(text))
                 new_content = text[initial_pos:]
                 for line in new_content.splitlines():
                     await self._process_line(line, src)

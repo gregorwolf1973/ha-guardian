@@ -223,7 +223,6 @@
   <button class="tab-btn" data-tab="whitelist">Whitelist</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
   <button class="tab-btn" data-tab="rules">Rules</button>
-  <button class="tab-btn" data-tab="debug">Debug</button>
 </div>
 
 <!-- DASHBOARD -->
@@ -298,6 +297,22 @@
         <tr class="empty-row"><td colspan="7">No addons discovered</td></tr>
       </tbody>
     </table>
+  </div>
+  <!-- File Search (moved from Debug) -->
+  <div class="section-header" style="margin-top:24px">
+    <h2>Log File Search</h2>
+  </div>
+  <div class="add-row" style="margin-bottom:4px">
+    <div class="field">
+      <label>Filename pattern <span style="color:var(--text-muted);font-size:11px">(e.g. auth.log, *.log, snappy*)</span></label>
+      <input id="findPattern" type="text" placeholder="auth.log" style="width:220px"
+             onkeydown="if(event.key==='Enter')findFile()">
+    </div>
+    <div class="field" style="justify-content:flex-end">
+      <label>&nbsp;</label>
+      <button class="btn btn-primary btn-sm" onclick="findFile()">Search</button>
+    </div>
+    <div id="findResults" style="width:100%;margin-top:8px"></div>
   </div>
 </div>
 
@@ -396,33 +411,14 @@
         <tr class="empty-row"><td colspan="6">No rules loaded</td></tr>
       </tbody>
     </table>
-  </div>
-</div>
-
-<!-- DEBUG -->
-<div id="tab-debug" class="tab-pane">
-  <div class="section-header" style="margin-bottom:10px">
-    <h2>File Search</h2>
-  </div>
-  <div class="add-row" style="margin-bottom:18px">
-    <div class="field">
-      <label>Filename pattern <span style="color:var(--text-muted);font-size:11px">(e.g. auth.log, *.log, snappy*)</span></label>
-      <input id="findPattern" type="text" placeholder="auth.log" style="width:220px"
-             onkeydown="if(event.key==='Enter')findFile()">
-    </div>
-    <div class="field" style="justify-content:flex-end">
-      <label>&nbsp;</label>
-      <button class="btn btn-primary btn-sm" onclick="findFile()">Search</button>
-    </div>
-    <div id="findResults" style="width:100%;margin-top:8px"></div>
-  </div>
-  <div class="section-header">
+  <!-- Unmatched Auth Lines (moved from Debug) -->
+  <div class="section-header" style="margin-top:24px">
     <h2>Unmatched Auth Lines</h2>
     <button class="btn btn-ghost btn-sm" onclick="loadUnmatched()">↻ Refresh</button>
   </div>
   <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
-    Lines from enabled log sources that contain auth-related keywords but didn't match any detection pattern.
-    Use this to identify new log formats that need pattern support.
+    Zeilen aus aktiven Log-Quellen mit auth-Schlüsselwörtern, die keinem Erkennungsmuster entsprechen.
+    Hilfreich um neue Log-Formate zu identifizieren.
   </p>
   <div class="table-wrap">
     <table>
@@ -497,7 +493,7 @@
 <div id="toast"></div>
 
 <script>
-const TABS = ['dashboard','bans','sources','whitelist','settings','rules','debug'];
+const TABS = ['dashboard','bans','sources','whitelist','settings','rules'];
 let activeTab = 'dashboard';
 
 // ---- Tabs ----
@@ -518,7 +514,6 @@ function refreshTab(tab) {
   else if (tab === 'whitelist') loadWhitelist();
   else if (tab === 'settings') loadSettings();
   else if (tab === 'rules') loadRules();
-  else if (tab === 'debug') loadUnmatched();
 }
 
 // ---- API ----

@@ -1,5 +1,5 @@
 name: "HA Guardian"
-version: "1.16.6"
+version: "1.16.7"
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs"
 url: "https://github.com/gregorwolf1973/ha-guardian"
