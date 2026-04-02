@@ -303,10 +303,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Monitor</th><th>Addon</th><th>Status</th><th>Health</th><th>Sources</th><th>Last Modified</th><th>Size</th><th>Preview</th></tr>
+        <tr><th>Monitor</th><th>Addon</th><th>Status</th><th>Health</th><th>Sources</th><th>Last Modified</th><th>Size</th></tr>
       </thead>
       <tbody id="sourcesTable">
-        <tr class="empty-row"><td colspan="8">No addons discovered</td></tr>
+        <tr class="empty-row"><td colspan="7">No addons discovered</td></tr>
       </tbody>
     </table>
   </div>
@@ -665,7 +665,8 @@ async function loadSources() {
   try {
     const addons = await api('GET', 'api/addons');
     const tb = document.getElementById('sourcesTable');
-    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="8">No addons discovered</td></tr>'; return; }
+    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No addons discovered</td></tr>'; return; }
+    window._addonsList = addons;
     tb.innerHTML = addons.map(a => {
       const isCustom = !!a.custom;
       const stateLabel = isCustom
@@ -677,18 +678,19 @@ async function loadSources() {
       const srcParts = [];
       if (a.docker_log) {
         const dockerPath = '/addons/' + esc(a.id) + '/logs';
-        srcParts.push('<span title="Supervisor API: ' + dockerPath + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">Docker</span>');
+        srcParts.push('<div style="display:flex;align-items:center;gap:4px"><span title="Supervisor API: ' + dockerPath + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">Docker</span> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource(\'addon:' + esc(a.id) + '\')">Preview</button></div>');
       }
       if (a.files && a.files.length) {
         a.files.forEach(f => {
           const sz = f.size ? ' (' + fmtSize(f.size) + ')' : '';
-          srcParts.push('<span title="' + esc(f.path) + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">' + esc(f.name) + sz + '</span>');
+          const manualBadge = f.manual ? ' <span style="font-size:9px;color:var(--primary)">[manual]</span>' : '';
+          const sid = f.source_id || ('file:' + f.path);
+          srcParts.push('<div style="display:flex;align-items:center;gap:4px"><span title="' + esc(f.path) + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">' + esc(f.name) + sz + '</span>' + manualBadge + ' <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource(\'' + esc(sid) + '\')">Preview</button> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" title="Reassign to different addon" onclick="reassignSource(\'' + esc(sid) + '\',\'' + esc(f.name) + '\')">⇄</button></div>');
         });
       }
       const lastMod = a.last_modified ? relTime(a.last_modified) : '–';
       const size = a.total_size ? fmtSize(a.total_size) : '–';
       const aid = esc(a.id);
-      const aname = (a.name || '').replace(/'/g, "\\'");
       const rowStyle = isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
       return `<tr${rowStyle} data-addon-id="${aid}">
         <td>
@@ -700,10 +702,9 @@ async function loadSources() {
         <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : ''}</td>
         <td>${stateLabel}</td>
         <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
-        <td style="font-size:12px">${srcParts.join('<br>') || '–'}</td>
+        <td style="font-size:12px">${srcParts.join('') || '–'}</td>
         <td class="countdown">${lastMod}</td>
         <td style="font-size:12px">${size}</td>
-        <td><button class="btn btn-ghost btn-sm" onclick="previewAddon('${aid}','${aname}')">Preview</button></td>
       </tr>`;
     }).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -772,6 +773,39 @@ async function previewAddon(id, name) {
   } catch (e) {
     document.getElementById('previewContent').textContent = 'Error: ' + e.message;
   }
+}
+
+async function previewSource(sourceId) {
+  const name = sourceId.replace(/^(file:|addon:)/, '').split('/').pop();
+  document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
+  document.getElementById('previewContent').textContent = 'Loading…';
+  document.getElementById('previewModal').style.display = 'block';
+  try {
+    const data = await api('POST', 'api/sources/preview', { id: sourceId, lines: 100 });
+    const lines = data.lines || [];
+    if (!lines.length) {
+      document.getElementById('previewContent').textContent = '(empty or not accessible)';
+      return;
+    }
+    document.getElementById('previewContent').innerHTML = lines.map(l => {
+      const el = esc(l);
+      return el.replace(/(login|auth|password|fail|denied|invalid|wrong|401|403|blocked|reject|credential|attempt|brute)/gi,
+        '<span style="color:var(--warn);font-weight:600">$1</span>');
+    }).join('\n');
+  } catch (e) {
+    document.getElementById('previewContent').textContent = 'Error: ' + e.message;
+  }
+}
+async function reassignSource(sourceId, fileName) {
+  const addons = window._addonsList || [];
+  const opts = addons.map(a => a.id + ' — ' + a.name);
+  const choice = prompt('Reassign "' + fileName + '" to which addon?\\n\\nAvailable addons:\\n' + opts.map((o,i) => (i+1) + '. ' + o).join('\\n') + '\\n\\nEnter addon ID (e.g. a0d7b954_nginxproxymanager) or leave empty to clear:');
+  if (choice === null) return;
+  try {
+    await api('POST', 'api/sources/reassign', { source_id: sourceId, addon_id: choice.trim() });
+    toast(choice.trim() ? 'Reassigned to ' + choice.trim() : 'Assignment cleared', 'ok');
+    loadSources();
+  } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 
 // ---- Whitelist ----

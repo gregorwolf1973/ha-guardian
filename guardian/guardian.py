@@ -705,11 +705,15 @@ _FILENAME_TO_ADDON_HINT = {
 def _guess_addon_slug(path: str, known_slugs: list) -> Optional[str]:
     """Try to match a log file to an addon by filename heuristics.
     known_slugs: list of all discovered addon slugs.
-
-    Files in a crowdsec directory (e.g. crowdsec/npm.log) are mapped to the
-    addon matching the *filename* (npm → NPM), not to Crowdsec itself.
-    Crowdsec merely aggregates logs — the user wants to toggle the target addon.
     """
+    # Files inside a crowdsec directory belong to the Crowdsec addon,
+    # NOT to whatever the filename might suggest (e.g. npm.log, 2fauth.log).
+    parts_lower = [p.lower() for p in Path(path).parts]
+    if "crowdsec" in parts_lower:
+        for slug in known_slugs:
+            if "crowdsec" in slug.lower() and "bouncer" not in slug.lower() and "dashboard" not in slug.lower():
+                return slug
+
     stem = Path(path).stem.lower()
     # Direct match in hint table
     for key, hint in _FILENAME_TO_ADDON_HINT.items():
@@ -912,14 +916,15 @@ class SourceManager:
                     # Update mtime and size for existing sources
                     self._sources[sid]["last_modified"] = mtime_iso
                     self._sources[sid]["size"] = size
-                    # Update addon_slug and name if addon_map has better info
-                    slug = _extract_addon_slug_from_path(path)
-                    if not slug:
-                        slug = _guess_addon_slug(path, list(addon_map.keys()))
-                    if slug:
-                        self._sources[sid]["addon_slug"] = slug
-                        if slug in addon_map:
-                            self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
+                    # Don't overwrite manually assigned addon_slug
+                    if not self._sources[sid].get("manual_addon_slug"):
+                        slug = _extract_addon_slug_from_path(path)
+                        if not slug:
+                            slug = _guess_addon_slug(path, list(addon_map.keys()))
+                        if slug:
+                            self._sources[sid]["addon_slug"] = slug
+                            if slug in addon_map:
+                                self._sources[sid]["name"] = f"{addon_map[slug]}: {Path(path).name}"
                     continue
 
                 name = _friendly_name(path, addon_map)
@@ -1098,10 +1103,12 @@ class SourceManager:
                 g["file_count"] += 1
                 g["total_size"] += src.get("size", 0)
                 g["files"].append({
+                    "source_id": src["id"],
                     "name": Path(src.get("path", "")).name,
                     "path": src.get("path", ""),
                     "size": src.get("size", 0),
                     "last_modified": src.get("last_modified"),
+                    "manual": src.get("manual_addon_slug", False),
                 })
                 # Track most recent modification
                 lm = src.get("last_modified")
@@ -2053,6 +2060,28 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             "recent_unmatched": list(scanner.unmatched_lines)[:20] if scanner else [],
         })
 
+    # --- Reassign file source to a different addon ---
+    async def handle_reassign_source(req):
+        d = await req.json()
+        source_id = d.get("source_id", "")
+        target_addon = d.get("addon_id", "").strip()
+        src = source_mgr.get_source(source_id)
+        if not src:
+            return web.json_response({"ok": False, "error": "source not found"}, status=404)
+        if src["type"] != "file":
+            return web.json_response({"ok": False, "error": "only file sources can be reassigned"}, status=400)
+        if not target_addon:
+            # Clear manual assignment
+            src.pop("manual_addon_slug", None)
+            src.pop("addon_slug", None)
+            source_mgr._save()
+            return web.json_response({"ok": True})
+        src["addon_slug"] = target_addon
+        src["manual_addon_slug"] = True
+        source_mgr._save()
+        log.info("Reassigned source %s → addon %s", source_id, target_addon)
+        return web.json_response({"ok": True})
+
     # --- Source Preview (last N lines of a log) ---
     async def handle_preview_source(req):
         d = await req.json()
@@ -2221,6 +2250,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/sources/discover", handle_discover_sources)
     app.router.add_post("/api/sources/add", handle_add_custom_source)
     app.router.add_post("/api/sources/preview", handle_preview_source)
+    app.router.add_post("/api/sources/reassign", handle_reassign_source)
     app.router.add_get("/api/addons", handle_get_addons)
     app.router.add_post("/api/addons/toggle", handle_toggle_addon)
     app.router.add_post("/api/addons/preview", handle_preview_addon)
