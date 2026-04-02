@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.8"
+VERSION = "1.18.9"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1734,7 +1734,8 @@ class LogScanner:
         self.detector = detector
         self.config = config
         self._file_state: dict = {}   # path -> {"inode": int, "pos": int}
-        self._addon_state: dict = {}  # slug -> last_length
+        self._addon_state: dict = {}  # slug -> last_length (for debug display)
+        self._addon_tail: dict = {}   # slug -> list of last N lines (for dedup)
         # Buffer of recent unmatched auth-related lines (for debugging)
         self.unmatched_lines: deque = deque(maxlen=200)
         self._last_status_log: float = 0  # timestamp of last periodic status log
@@ -1874,27 +1875,45 @@ class LogScanner:
                         return
                     text = await resp.text()
 
-            last_len = self._addon_state.get(slug)
-            if last_len is None:
-                # First poll: read all available text (Docker logs are typically not huge)
-                initial_pos = max(0, len(text) - 5 * 1024 * 1024)  # cap at 5MB
-                log.debug("First poll of addon %s — reading from pos %d/%d", slug, initial_pos, len(text))
-                new_content = text[initial_pos:]
-                for line in new_content.splitlines():
+            lines = text.splitlines()
+            if not lines:
+                return
+
+            last_tail = self._addon_tail.get(slug)
+
+            if last_tail is None:
+                # First poll: process recent lines with first_read filter
+                cap = min(len(lines), 10000)  # cap at 10k lines
+                log.debug("First poll of addon %s — %d lines (processing last %d)", slug, len(lines), cap)
+                for line in lines[-cap:]:
                     await self._process_line(line, src, first_read=True)
-                self._addon_state[slug] = len(text)
-                return
-            if len(text) < last_len:
-                # Log was rotated/truncated — skip this poll to avoid re-processing
-                # old lines. The timestamp filter is a safety net but can't prevent
-                # duplicates for recent lines within the monitoring window.
-                log.debug("Addon %s log shrank (%d→%d) — skipping re-process", slug, last_len, len(text))
-                self._addon_state[slug] = len(text)
-                return
-            if len(text) > last_len:
-                new_content = text[last_len:]
-                for line in new_content.splitlines():
-                    await self._process_line(line, src)
+            else:
+                # Find where we left off by matching the last known tail lines.
+                # Docker logs rotate (old lines removed from start), so
+                # length-based tracking is unreliable.
+                tail_len = len(last_tail)
+                found_at = -1
+                # Search for the sequence of tail lines in the current lines
+                for i in range(len(lines) - tail_len + 1):
+                    if lines[i:i + tail_len] == last_tail:
+                        found_at = i + tail_len
+                        break
+                if found_at >= 0:
+                    # Process everything after the matched tail
+                    new_lines = lines[found_at:]
+                else:
+                    # Tail not found — log was fully rotated.
+                    # Process all with first_read filter to avoid duplicates.
+                    log.debug("Addon %s — tail not found, processing all %d lines", slug, len(lines))
+                    new_lines = lines
+                for line in new_lines:
+                    first_read = (found_at < 0)
+                    await self._process_line(line, src, first_read=first_read)
+
+            # Store last N lines as fingerprint for next poll
+            tail_size = min(5, len(lines))
+            self._addon_tail[slug] = lines[-tail_size:]
+            # Also update addon_state for debug display
             self._addon_state[slug] = len(text)
         except Exception as e:
             log.debug("Error polling addon %s: %s", slug, e)
