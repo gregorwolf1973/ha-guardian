@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.7"
+VERSION = "1.18.8"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1645,6 +1645,16 @@ class Detector:
             self._last_whitelisted_ip = ip
             log.debug("Skipped whitelisted IP %s (source=%s, pattern=%s)",
                       ip, source_name, pattern)
+            # Still show skipped events in the dashboard so the user sees
+            # that the pattern DID match — just wasn't counted.
+            event_time = log_time if log_time else datetime.now(timezone.utc)
+            skip_event = {
+                "time": event_time.isoformat(), "ip": ip,
+                "source_id": source_id, "source_name": source_name,
+                "url": url, "pattern": pattern, "line": line,
+                "count": 0, "banned": False, "skipped": True,
+            }
+            self._events.appendleft(skip_event)
             return
         now = datetime.now(timezone.utc)
         # Use the timestamp from the log line for display only.

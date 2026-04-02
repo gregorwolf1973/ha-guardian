@@ -1,5 +1,5 @@
 name: "HA Guardian"
-version: "1.18.7"
+version: "1.18.8"
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs"
 url: "https://github.com/gregorwolf1973/ha-guardian"
@@ -12,6 +12,7 @@ arch:
 startup: services
 boot: auto
 init: false
+host_network: true
 cap_add:
   - NET_ADMIN
 hassio_api: true

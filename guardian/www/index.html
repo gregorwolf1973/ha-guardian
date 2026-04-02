@@ -634,20 +634,33 @@ async function loadDashboard() {
     const rawEvents = await api('GET', 'api/events');
     const tb = document.getElementById('eventsTable');
     if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No events yet</td></tr>'; return; }
-    // Deduplicate: keep only the latest event per IP (highest count)
+    // Deduplicate: keep only the latest event per IP (highest count).
+    // Skipped (whitelisted) events are shown separately — don't dedup them away.
     const byIp = {};
+    const skipped = [];
     rawEvents.forEach(e => {
+      if (e.skipped) { skipped.push(e); return; }
       if (!byIp[e.ip] || e.count > byIp[e.ip].count) byIp[e.ip] = e;
     });
-    const events = Object.values(byIp).sort((a,b) => b.time.localeCompare(a.time));
-    tb.innerHTML = events.map(e => `<tr>
+    // Keep only latest skipped per IP
+    const skipByIp = {};
+    skipped.forEach(e => { if (!skipByIp[e.ip]) skipByIp[e.ip] = e; });
+    const events = [...Object.values(byIp), ...Object.values(skipByIp)]
+      .sort((a,b) => b.time.localeCompare(a.time));
+    tb.innerHTML = events.map(e => {
+      let statusBadge;
+      if (e.skipped) statusBadge = '<span class="badge badge-info" title="Matched pattern but IP is whitelisted or My IP">SKIPPED</span>';
+      else if (e.banned) statusBadge = '<span class="badge badge-danger">BANNED</span>';
+      else statusBadge = '<span class="badge badge-warn">Attempt</span>';
+      return `<tr${e.skipped ? ' style="opacity:0.6"' : ''}>
       <td class="countdown">${relTime(e.time)}</td>
-      <td class="mono">${esc(e.ip)}</td>
+      <td class="mono">${esc(e.ip)}${e.skipped ? ' <span style="font-size:9px;color:var(--primary)">(My IP / WL)</span>' : ''}</td>
       <td style="font-size:12px">${esc(e.source_name || '–')}</td>
       <td>${e.count}</td>
-      <td>${e.banned ? '<span class="badge badge-danger">BANNED</span>' : '<span class="badge badge-warn">Attempt</span>'}</td>
+      <td>${statusBadge}</td>
       <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || '–')}</code></td>
-    </tr>`).join('');
+    </tr>`;
+    }).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 
