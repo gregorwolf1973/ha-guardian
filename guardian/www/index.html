@@ -713,15 +713,14 @@ async function loadStats() {
     const fwEl = document.getElementById('sFirewall');
     const fwCard = document.getElementById('sFirewallCard');
     if (s.iptables_available) {
-      fwEl.textContent = 'Active';
+      fwEl.textContent = 'Network';
       fwEl.style.color = 'var(--success)';
       fwCard.classList.add('success');
       fwCard.classList.remove('danger');
     } else {
-      fwEl.textContent = 'Inactive';
-      fwEl.style.color = 'var(--danger)';
-      fwCard.classList.add('danger');
-      fwCard.classList.remove('success');
+      fwEl.textContent = 'App Layer';
+      fwEl.style.color = 'var(--success)';
+      fwCard.classList.remove('danger');
     }
     document.getElementById('statusDot').style.background = 'var(--success)';
     document.getElementById('statusText').textContent = 'Running';
@@ -1087,39 +1086,22 @@ async function loadSystemStatus() {
     _systemState = sys;
     if (!banner) return;  // Not on settings tab
     banner.style.display = 'flex';
-    const fwBackend = sys.firewall_backend || 'iptables';
+    const fwBackend = sys.firewall_backend || null;
     if (sys.iptables_available) {
-      // Firewall is active
+      // Network-level firewall is active (rare on HassOS)
       banner.className = 'system-banner ok';
-      title.textContent = 'Firewall active (' + fwBackend + ')';
-      desc.textContent = 'Banned IPs are blocked at the network level. Protected Mode: ' +
-        (sys.protected_mode === false ? 'OFF' : sys.protected_mode === true ? 'ON' : 'unknown');
+      title.textContent = 'Firewall active — network level (' + fwBackend + ')';
+      desc.textContent = 'Banned IPs are dropped at the network level before reaching Home Assistant.';
       btn.style.display = 'none';
       restartBtn.style.display = 'none';
-    } else if (sys.protected_mode === true) {
-      // Protected mode is ON — that's why firewall doesn't work
-      banner.className = 'system-banner warn';
-      title.textContent = 'Firewall NOT active — Protected Mode is ON';
-      desc.innerHTML = 'Protected Mode prevents Guardian from blocking IPs at the network level. ' +
-        'Bans are only written to <code>ip_bans.yaml</code> but <b>not enforced</b>.<br>' +
-        'Disable Protected Mode and restart the addon to enable real IP blocking.';
-      btn.textContent = 'Disable Protected Mode';
-      btn.className = 'btn btn-danger btn-sm';
-      btn.style.display = '';
-      restartBtn.style.display = 'none';
-    } else if (sys.protected_mode === false) {
-      // Protected mode is off but firewall still not available — needs restart
-      banner.className = 'system-banner warn';
-      title.textContent = 'Firewall NOT active — Restart required';
-      desc.textContent = 'Protected Mode is disabled, but the addon needs a restart to activate the firewall ' +
-        '(tried iptables-nft, iptables, and nft — none available yet).';
-      btn.style.display = 'none';
-      restartBtn.style.display = '';
     } else {
-      // Unknown state
-      banner.className = 'system-banner warn';
-      title.textContent = 'Firewall status unknown';
-      desc.textContent = 'Could not determine Protected Mode status from Supervisor API.';
+      // No network-level firewall — explain that ip_bans.yaml still works
+      banner.className = 'system-banner ok';
+      title.textContent = 'Banning active — application level (ip_bans.yaml)';
+      desc.innerHTML = 'HassOS does not expose netfilter (iptables/nftables) to addon containers — ' +
+        'this is by design and cannot be changed. ' +
+        'Guardian writes banned IPs to <code>ip_bans.yaml</code>: Home Assistant returns ' +
+        '<b>HTTP 403</b> for every request from those IPs, which is sufficient for brute-force protection.';
       btn.style.display = 'none';
       restartBtn.style.display = 'none';
     }
