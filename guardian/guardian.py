@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch, translate as fnmatch_translate
@@ -26,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.5"
+VERSION = "1.18.6"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1352,12 +1353,94 @@ class SourceManager:
 # Ban Manager
 # ---------------------------------------------------------------------------
 class BanManager:
+    # iptables chain name — all Guardian rules go here for easy flush
+    _CHAIN = "GUARDIAN"
+
     def __init__(self, config: Config):
         self.config = config
         self._bans: dict = {}
         self._evidence: dict = {}   # ip -> list of event dicts
         self._lock = asyncio.Lock()
+        self._iptables_available = self._check_iptables()
         self._load()
+
+    # ------------------------------------------------------------------
+    # iptables helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _check_iptables() -> bool:
+        """Return True if iptables is available and we have NET_ADMIN."""
+        try:
+            r = subprocess.run(
+                ["iptables", "-L", "INPUT", "-n"],
+                capture_output=True, timeout=3
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    def _ensure_chain(self):
+        """Create GUARDIAN chain and hook it into INPUT if not present."""
+        try:
+            # Create chain if missing
+            subprocess.run(["iptables", "-N", self._CHAIN],
+                           capture_output=True, timeout=3)
+            # Hook into INPUT if not already there
+            r = subprocess.run(
+                ["iptables", "-C", "INPUT", "-j", self._CHAIN],
+                capture_output=True, timeout=3
+            )
+            if r.returncode != 0:
+                subprocess.run(
+                    ["iptables", "-I", "INPUT", "1", "-j", self._CHAIN],
+                    check=True, timeout=3
+                )
+        except Exception as e:
+            log.warning("iptables chain setup failed: %s", e)
+
+    def _ipt_ban(self, ip: str):
+        if not self._iptables_available:
+            return
+        try:
+            self._ensure_chain()
+            # Check if rule already exists
+            r = subprocess.run(
+                ["iptables", "-C", self._CHAIN, "-s", ip, "-j", "DROP"],
+                capture_output=True, timeout=3
+            )
+            if r.returncode != 0:
+                subprocess.run(
+                    ["iptables", "-A", self._CHAIN, "-s", ip, "-j", "DROP"],
+                    check=True, timeout=3
+                )
+            log.debug("iptables: blocked %s", ip)
+        except Exception as e:
+            log.warning("iptables ban failed for %s: %s", ip, e)
+
+    def _ipt_unban(self, ip: str):
+        if not self._iptables_available:
+            return
+        try:
+            subprocess.run(
+                ["iptables", "-D", self._CHAIN, "-s", ip, "-j", "DROP"],
+                capture_output=True, timeout=3
+            )
+            log.debug("iptables: unblocked %s", ip)
+        except Exception as e:
+            log.warning("iptables unban failed for %s: %s", ip, e)
+
+    def restore_iptables(self):
+        """Re-apply iptables rules for all currently active bans (called on startup)."""
+        if not self._iptables_available:
+            log.info("iptables not available — skipping firewall rules")
+            return
+        self._ensure_chain()
+        count = 0
+        for ip in self._bans:
+            self._ipt_ban(ip)
+            count += 1
+        if count:
+            log.info("iptables: restored %d ban rule(s)", count)
 
     def _load(self):
         try:
@@ -1426,6 +1509,7 @@ class BanManager:
             if evidence is not None:
                 self._evidence[ip] = evidence
             await self._flush()
+        self._ipt_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
         return True
 
@@ -1439,6 +1523,7 @@ class BanManager:
             del self._bans[ip]
             self._evidence.pop(ip, None)
             await self._flush()
+        self._ipt_unban(ip)
         log.info("Unbanned %s", ip)
         return True
 
@@ -2281,6 +2366,7 @@ async def main():
     state = PersistentState()
     config = Config(state)
     bans = BanManager(config)
+    bans.restore_iptables()
     alert_tracker = AlertTracker(config)
     detector = Detector(config, bans, alert_tracker)
     source_mgr = SourceManager(config)

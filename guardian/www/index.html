@@ -610,9 +610,15 @@ async function loadStats() {
 async function loadDashboard() {
   await loadStats();
   try {
-    const events = await api('GET', 'api/events');
+    const rawEvents = await api('GET', 'api/events');
     const tb = document.getElementById('eventsTable');
-    if (!events.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No events yet</td></tr>'; return; }
+    if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No events yet</td></tr>'; return; }
+    // Deduplicate: keep only the latest event per IP (highest count)
+    const byIp = {};
+    rawEvents.forEach(e => {
+      if (!byIp[e.ip] || e.count > byIp[e.ip].count) byIp[e.ip] = e;
+    });
+    const events = Object.values(byIp).sort((a,b) => b.time.localeCompare(a.time));
     tb.innerHTML = events.map(e => `<tr>
       <td class="countdown">${relTime(e.time)}</td>
       <td class="mono">${esc(e.ip)}</td>
