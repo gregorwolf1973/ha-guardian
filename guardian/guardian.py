@@ -1073,6 +1073,7 @@ class SourceManager:
                     "last_modified": None,
                     "total_size": 0,
                     "sources": [],
+                    "files": [],
                 }
 
             g = groups[addon_id]
@@ -1092,6 +1093,12 @@ class SourceManager:
             elif src["type"] == "file":
                 g["file_count"] += 1
                 g["total_size"] += src.get("size", 0)
+                g["files"].append({
+                    "name": Path(src.get("path", "")).name,
+                    "path": src.get("path", ""),
+                    "size": src.get("size", 0),
+                    "last_modified": src.get("last_modified"),
+                })
                 # Track most recent modification
                 lm = src.get("last_modified")
                 if lm and (not g["last_modified"] or lm > g["last_modified"]):
@@ -1125,13 +1132,15 @@ class SourceManager:
                 "last_modified": g["last_modified"],
                 "total_size": g["total_size"],
                 "custom": g.get("custom", False),
+                "files": g.get("files", []),
             })
 
         # Sort: enabled first, then by name
         result.sort(key=lambda a: (not a["enabled"], a["name"].lower()))
         return result
 
-    def toggle_addon(self, addon_id: str, enabled: bool) -> bool:
+    def toggle_addon(self, addon_id: str, enabled: bool,
+                     scanner: Optional["LogScanner"] = None) -> bool:
         """Toggle all sources belonging to an addon on or off."""
         found = False
         toggled = []
@@ -1150,13 +1159,25 @@ class SourceManager:
                     src_addon = extracted if extracted else (src["id"] if src.get("custom") else None)
             if src_addon == addon_id:
                 src["enabled"] = enabled
-                toggled.append(src["id"])
+                toggled.append(src)
                 found = True
         if found:
             self._save()
+            # Clean up scanner state for disabled sources immediately
+            if not enabled and scanner:
+                for src in toggled:
+                    if src["type"] == "file":
+                        path = src.get("path", "")
+                        if path in scanner._file_state:
+                            del scanner._file_state[path]
+                    elif src["type"] == "addon":
+                        slug = src.get("slug", "")
+                        if slug in scanner._addon_state:
+                            del scanner._addon_state[slug]
+            toggled_ids = [s["id"] for s in toggled]
             log.info("Toggled addon %s → %s (%d sources: %s)",
-                     addon_id, "ON" if enabled else "OFF", len(toggled),
-                     ", ".join(toggled[:5]))
+                     addon_id, "ON" if enabled else "OFF", len(toggled_ids),
+                     ", ".join(toggled_ids[:5]))
         else:
             log.warning("Toggle failed: addon_id=%s not found in %d sources",
                         addon_id, len(self._sources))
@@ -1611,7 +1632,24 @@ class LogScanner:
         self._last_status_log = datetime.now().timestamp()
 
         _addon_tick = 0
+        _cleanup_tick = 0
         while True:
+            # Periodically clean up state for disabled sources (every 60 ticks)
+            _cleanup_tick += 1
+            if _cleanup_tick >= 60:
+                _cleanup_tick = 0
+                enabled_paths = {s["path"] for s in self.source_mgr.get_enabled("file")}
+                enabled_slugs = {s.get("slug", "") for s in self.source_mgr.get_enabled("addon")}
+                stale_files = [p for p in self._file_state if p not in enabled_paths]
+                stale_addons = [s for s in self._addon_state if s not in enabled_slugs]
+                for p in stale_files:
+                    del self._file_state[p]
+                for s in stale_addons:
+                    del self._addon_state[s]
+                if stale_files or stale_addons:
+                    log.debug("Cleaned scanner state: %d file(s), %d addon(s)",
+                              len(stale_files), len(stale_addons))
+
             for src in self.source_mgr.get_enabled("file"):
                 await self._scan_file(src)
             _addon_tick += 1
@@ -1913,7 +1951,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         d = await req.json()
         addon_id = d.get("id", "")
         enabled = bool(d.get("enabled", False))
-        ok = source_mgr.toggle_addon(addon_id, enabled)
+        ok = source_mgr.toggle_addon(addon_id, enabled, scanner=scanner)
         if ok:
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "addon not found"}, status=404)

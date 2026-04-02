@@ -674,9 +674,14 @@ async function loadSources() {
           ? '<span class="badge badge-success">Running</span>'
           : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
           : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
-      const srcInfo = [];
-      if (a.docker_log) srcInfo.push('Docker');
-      if (a.file_count) srcInfo.push(a.file_count + ' file' + (a.file_count > 1 ? 's' : ''));
+      const srcParts = [];
+      if (a.docker_log) srcParts.push('Docker');
+      if (a.files && a.files.length) {
+        a.files.forEach(f => {
+          const sz = f.size ? ' (' + fmtSize(f.size) + ')' : '';
+          srcParts.push('<span title="' + esc(f.path) + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">' + esc(f.name) + sz + '</span>');
+        });
+      }
       const lastMod = a.last_modified ? relTime(a.last_modified) : '–';
       const size = a.total_size ? fmtSize(a.total_size) : '–';
       const aid = esc(a.id);
@@ -692,7 +697,7 @@ async function loadSources() {
         <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : ''}</td>
         <td>${stateLabel}</td>
         <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
-        <td style="font-size:12px">${srcInfo.join(' + ') || '–'}</td>
+        <td style="font-size:12px">${srcParts.join('<br>') || '–'}</td>
         <td class="countdown">${lastMod}</td>
         <td style="font-size:12px">${size}</td>
         <td><button class="btn btn-ghost btn-sm" onclick="previewAddon('${aid}','${aname}')">Preview</button></td>
