@@ -1883,6 +1883,37 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     async def handle_health(req):
         return web.json_response({"status": "ok", "version": VERSION})
 
+    async def handle_debug(req):
+        """Return diagnostic info about sources, scanner state, and recent events."""
+        all_src = source_mgr.get_all()
+        enabled = [s for s in all_src if s.get("enabled")]
+        disabled_with_slug = [
+            {"id": s["id"], "name": s.get("name", "?"), "type": s["type"],
+             "path": s.get("path", ""), "addon_slug": s.get("addon_slug", ""),
+             "enabled": False}
+            for s in all_src if not s.get("enabled") and s.get("addon_slug")
+        ]
+        scanner_state = {}
+        if scanner:
+            scanner_state = {
+                "file_state": {k: v for k, v in scanner._file_state.items()},
+                "addon_state": dict(scanner._addon_state),
+                "unmatched_count": len(scanner.unmatched_lines),
+            }
+        return web.json_response({
+            "version": VERSION,
+            "total_sources": len(all_src),
+            "enabled_sources": [
+                {"id": s["id"], "name": s.get("name", "?"), "type": s["type"],
+                 "path": s.get("path", ""), "addon_slug": s.get("addon_slug", s.get("slug", ""))}
+                for s in enabled
+            ],
+            "disabled_addon_sources": disabled_with_slug[:30],
+            "scanner": scanner_state,
+            "recent_events": list(detector._events)[:20],
+            "recent_unmatched": list(scanner.unmatched_lines)[:20] if scanner else [],
+        })
+
     # --- Source Preview (last N lines of a log) ---
     async def handle_preview_source(req):
         d = await req.json()
@@ -2061,6 +2092,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_get("/api/config", handle_get_config)
     app.router.add_post("/api/config", handle_post_config)
     app.router.add_get("/api/health", handle_health)
+    app.router.add_get("/api/debug", handle_debug)
     app.router.add_get("/api/bans/{ip}/evidence", handle_ban_evidence)
     app.router.add_get("/api/rules", handle_get_rules)
     app.router.add_post("/api/rules", handle_post_rule)
@@ -2093,7 +2125,14 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    log.info("Web server ready")
+    # Optional direct-access port for debugging (accessible without ingress)
+    debug_port = int(os.environ.get("GUARDIAN_DEBUG_PORT", 8099))
+    try:
+        site2 = web.TCPSite(runner, "0.0.0.0", debug_port)
+        await site2.start()
+        log.info("Web server ready on ports %d (ingress) and %d (direct)", PORT, debug_port)
+    except Exception:
+        log.info("Web server ready on port %d (ingress only)", PORT)
 
     await asyncio.gather(
         scanner.run(),

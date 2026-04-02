@@ -18,6 +18,10 @@ ingress: true
 ingress_port: 8098
 panel_icon: mdi:shield-lock
 panel_title: Guardian
+ports:
+  "8099/tcp": 8099
+ports_description:
+  "8099/tcp": "Guardian direct access (optional, for debugging)"
 map:
   - type: config
     read_only: false
