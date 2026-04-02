@@ -675,7 +675,10 @@ async function loadSources() {
           : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
           : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
       const srcParts = [];
-      if (a.docker_log) srcParts.push('Docker');
+      if (a.docker_log) {
+        const dockerPath = '/addons/' + esc(a.id) + '/logs';
+        srcParts.push('<span title="Supervisor API: ' + dockerPath + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">Docker</span>');
+      }
       if (a.files && a.files.length) {
         a.files.forEach(f => {
           const sz = f.size ? ' (' + fmtSize(f.size) + ')' : '';
