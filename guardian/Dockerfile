@@ -4,7 +4,9 @@ FROM $BUILD_FROM
 # Install Python dependencies via apk and pip
 RUN apk add --no-cache \
         py3-aiohttp \
-        py3-yaml && \
+        py3-yaml \
+        iptables \
+        ip6tables && \
     pip3 install --no-cache-dir --break-system-packages \
         aiohttp \
         pyyaml || true
