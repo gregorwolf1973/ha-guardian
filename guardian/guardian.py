@@ -1546,7 +1546,8 @@ class Detector:
         self._last_whitelisted_ip = ""
         self._started = datetime.now(timezone.utc)
 
-    async def record(self, ip, source_id, source_name, url="", pattern="", line=""):
+    async def record(self, ip, source_id, source_name, url="", pattern="",
+                     line="", log_time=None):
         if self.config.is_whitelisted(ip):
             self._whitelisted_skips += 1
             self._last_whitelisted_ip = ip
@@ -1554,17 +1555,19 @@ class Detector:
                       ip, source_name, pattern)
             return
         now = datetime.now(timezone.utc)
+        # Use the timestamp from the log line if available, otherwise now
+        event_time = log_time if log_time else now
         cutoff = now - timedelta(minutes=self.config.window_minutes)
         dq = self._windows[ip]
         while dq and dq[0] < cutoff:
             dq.popleft()
-        dq.append(now)
+        dq.append(event_time)
         self._total_attempts += 1
         self.alerts.record(source_id, source_name, ip)
         banned_now = False
 
         event = {
-            "time": now.isoformat(), "ip": ip,
+            "time": event_time.isoformat(), "ip": ip,
             "source_id": source_id, "source_name": source_name,
             "url": url, "pattern": pattern, "line": line,
         }
@@ -1811,10 +1814,13 @@ class LogScanner:
             um = URL_RE.search(line)
             if um:
                 url = um.group(1)
+            # Parse log line timestamp for accurate event time
+            log_time = _parse_line_timestamp(line)
             await self.detector.record(
                 ip=ip, source_id=src["id"],
                 source_name=src.get("name", src["id"]),
                 url=url, pattern=pattern_name, line=line,
+                log_time=log_time,
             )
         elif _is_auth_related(line):
             # Line looks auth-related but no pattern matched — log for debugging
