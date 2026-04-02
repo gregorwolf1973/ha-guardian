@@ -1595,6 +1595,7 @@ class LogScanner:
             inode, size = stat.st_ino, stat.st_size
             state = self._file_state.get(path)
 
+            first_read = False
             if state is None:
                 # First scan: estimate how much to read based on alert_window_hours.
                 # Use file mtime and ctime to guess the portion within the time window.
@@ -1603,6 +1604,7 @@ class LogScanner:
                 log.debug("First scan of %s — reading from pos %d/%d (window=%dh)",
                          path, initial_pos, size, self.config.alert_window_hours)
                 state = self._file_state[path]
+                first_read = True
 
             if inode != state["inode"] or size < state["pos"]:
                 state["inode"] = inode
@@ -1615,7 +1617,7 @@ class LogScanner:
             with open(path, errors="replace") as f:
                 f.seek(state["pos"])
                 for line in f:
-                    await self._process_line(line, src)
+                    await self._process_line(line, src, first_read=first_read)
                 state["pos"] = f.tell()
         except Exception as e:
             log.error("Error scanning %s: %s", path, e)
@@ -1644,7 +1646,7 @@ class LogScanner:
                 log.debug("First poll of addon %s — reading from pos %d/%d", slug, initial_pos, len(text))
                 new_content = text[initial_pos:]
                 for line in new_content.splitlines():
-                    await self._process_line(line, src)
+                    await self._process_line(line, src, first_read=True)
                 self._addon_state[slug] = len(text)
                 return
             if len(text) < last_len:
@@ -1662,16 +1664,19 @@ class LogScanner:
         except Exception as e:
             log.debug("Error polling addon %s: %s", slug, e)
 
-    async def _process_line(self, line: str, src: dict):
+    async def _process_line(self, line: str, src: dict, first_read: bool = False):
         line = line.strip()
         if not line:
             return
-        # Skip lines outside the monitoring window
-        ts = _parse_line_timestamp(line)
-        if ts is not None:
-            age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
-            if age_seconds > self.config.window_minutes * 60:
-                return
+        # On first read of a source, skip lines outside the alert window to avoid
+        # re-triggering old events. During normal tailing, process all new lines
+        # regardless of age (they are genuinely new data from the file/addon).
+        if first_read:
+            ts = _parse_line_timestamp(line)
+            if ts is not None:
+                age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+                if age_seconds > self.config.alert_window_hours * 3600:
+                    return
         result = extract_ip(line)
         if result:
             ip, pattern_name = result
