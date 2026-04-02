@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.20.1"
+VERSION = "1.20.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1939,7 +1939,10 @@ class LogScanner:
             ts = _parse_line_timestamp(line)
             if ts is not None:
                 age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
-                if age_seconds > self.config.alert_window_hours * 3600:
+                # Skip logs older than the detection window to avoid counting
+                # old login attempts as if they happened just now
+                if age_seconds > self.config.window_minutes * 60:
+                    log.debug("Skipped old log line (%dmin old): %s", int(age_seconds/60), line[:100])
                     return
         result = extract_ip(line)
         if result:
