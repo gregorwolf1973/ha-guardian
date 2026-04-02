@@ -182,6 +182,20 @@
     #toast.ok { background: #1b3a1e; border: 1px solid var(--success); color: #a5d6a7; }
     #toast.err { background: #3a1b1b; border: 1px solid var(--danger); color: #ef9a9a; }
 
+    /* Loading overlay */
+    .loading-overlay {
+      position: absolute; inset: 0; background: rgba(17,19,24,.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 10; border-radius: var(--radius);
+    }
+    .spinner {
+      width: 28px; height: 28px; border: 3px solid var(--border);
+      border-top-color: var(--primary); border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .tab-pane { position: relative; min-height: 80px; }
+
     /* System status banner */
     .system-banner {
       border-radius: var(--radius); padding: 14px 18px; margin-bottom: 16px;
@@ -250,15 +264,14 @@
 <div id="tab-dashboard" class="tab-pane active">
   <div class="section-header">
     <h2>Recent Login Failures</h2>
-    <button class="btn btn-ghost btn-sm" onclick="loadDashboard()">↻ Refresh</button>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th></tr>
+        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th><th></th></tr>
       </thead>
       <tbody id="eventsTable">
-        <tr class="empty-row"><td colspan="6">No events yet</td></tr>
+        <tr class="empty-row"><td colspan="7">No events yet</td></tr>
       </tbody>
     </table>
   </div>
@@ -286,7 +299,6 @@
   </div>
   <div class="section-header">
     <h2>Blocked IPs</h2>
-    <button class="btn btn-ghost btn-sm" onclick="loadBans()">↻ Refresh</button>
   </div>
   <div class="table-wrap">
     <table>
@@ -307,7 +319,6 @@
     <div style="display:flex;gap:6px">
       <button class="btn btn-primary btn-sm" onclick="discoverSources()">Discover</button>
       <button class="btn btn-ghost btn-sm" onclick="healthCheck()">Health Check</button>
-      <button class="btn btn-ghost btn-sm" onclick="loadSources()">↻ Refresh</button>
     </div>
   </div>
   <!-- Add custom file source -->
@@ -324,10 +335,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Monitor</th><th>Addon</th><th>Status</th><th>Health</th><th>Sources</th><th>Last Modified</th><th>Size</th></tr>
+        <tr><th>Monitor</th><th>Addon</th><th>Source</th><th>Status</th><th>Health</th><th>Last Modified</th><th>Size</th><th></th></tr>
       </thead>
       <tbody id="sourcesTable">
-        <tr class="empty-row"><td colspan="7">No addons discovered</td></tr>
+        <tr class="empty-row"><td colspan="8">No addons discovered</td></tr>
       </tbody>
     </table>
   </div>
@@ -366,7 +377,6 @@
   </div>
   <div class="section-header">
     <h2>Whitelisted Entries</h2>
-    <button class="btn btn-ghost btn-sm" onclick="loadWhitelist()">↻ Refresh</button>
   </div>
   <div class="table-wrap">
     <table>
@@ -464,7 +474,6 @@
     <div style="display:flex;gap:6px">
       <button class="btn btn-primary btn-sm" onclick="showRuleEditor(null)">+ Add Rule</button>
       <button class="btn btn-danger btn-sm" onclick="resetRules()">Factory Reset</button>
-      <button class="btn btn-ghost btn-sm" onclick="loadRules()">↻ Refresh</button>
     </div>
   </div>
   <div class="table-wrap">
@@ -480,7 +489,6 @@
   <!-- Unmatched Auth Lines (moved from Debug) -->
   <div class="section-header" style="margin-top:24px">
     <h2>Unmatched Auth Lines</h2>
-    <button class="btn btn-ghost btn-sm" onclick="loadUnmatched()">↻ Refresh</button>
   </div>
   <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
     Zeilen aus aktiven Log-Quellen mit auth-Schlüsselwörtern, die keinem Erkennungsmuster entsprechen.
@@ -548,12 +556,24 @@
 
 <!-- RULE EDITOR MODAL -->
 <div id="ruleModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closeRuleModal()">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:700px;margin:0 auto">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:750px;margin:0 auto">
     <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <h3 id="ruleModalTitle" style="font-size:14px">Edit Rule</h3>
       <button class="btn btn-ghost btn-sm" onclick="closeRuleModal()">✕ Close</button>
     </div>
     <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+      <!-- Regex Generator -->
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:14px">
+        <h4 style="font-size:12px;color:var(--primary);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Regex Generator</h4>
+        <div class="field" style="margin-bottom:8px"><label style="font-size:11px;color:var(--text-muted)">Paste a sample log line</label>
+          <textarea id="genSample" rows="2" style="width:100%;font-family:monospace;font-size:11px;resize:vertical;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px" placeholder="[02/Apr/2026:16:42:49 +0200] - 500 500 - POST https 2fa.example.com &quot;/user/login&quot; [Client 91.5.115.24]"></textarea></div>
+        <div class="field" style="margin-bottom:8px"><label style="font-size:11px;color:var(--text-muted)">Keywords that identify a failed login (space-separated)</label>
+          <input id="genKeywords" type="text" placeholder="e.g. 500 POST /user/login" style="width:100%;font-size:12px"></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn btn-primary btn-sm" onclick="generateRegex()">Generate Regex</button>
+          <span id="genResult" style="font-size:11px"></span>
+        </div>
+      </div>
       <div class="field"><label>Rule ID <span style="color:var(--text-muted);font-size:11px">(snake_case, unique)</span></label>
         <input id="ruleId" type="text" placeholder="e.g. my_app_fail" style="width:100%"></div>
       <div class="field"><label>Description</label>
@@ -577,11 +597,44 @@
   </div>
 </div>
 
+<!-- IP EVENTS DETAIL MODAL -->
+<div id="ipEventsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closeIpEvents()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:900px;margin:0 auto;max-height:90vh;display:flex;flex-direction:column">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <h3 style="font-size:14px">Detection Details: <span id="ipEventsIp" class="mono"></span></h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeIpEvents()">✕ Close</button>
+    </div>
+    <div style="padding:14px 18px;overflow:auto;flex:1;max-height:70vh">
+      <table style="width:100%">
+        <thead><tr><th>Time</th><th>Source</th><th>Pattern</th><th>Log Line</th></tr></thead>
+        <tbody id="ipEventsTable"><tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
 const TABS = ['dashboard','bans','sources','whitelist','settings','rules'];
 let activeTab = 'dashboard';
+
+// ---- Loading Spinner ----
+function showLoading(tabId) {
+  const pane = document.getElementById('tab-' + tabId);
+  if (!pane) return;
+  if (pane.querySelector('.loading-overlay')) return;
+  const ov = document.createElement('div');
+  ov.className = 'loading-overlay';
+  ov.innerHTML = '<div class="spinner"></div>';
+  pane.appendChild(ov);
+}
+function hideLoading(tabId) {
+  const pane = document.getElementById('tab-' + tabId);
+  if (!pane) return;
+  const ov = pane.querySelector('.loading-overlay');
+  if (ov) ov.remove();
+}
 
 // ---- Tabs ----
 document.getElementById('tabBar').addEventListener('click', e => {
@@ -677,20 +730,20 @@ async function loadStats() {
 
 // ---- Dashboard ----
 async function loadDashboard() {
+  showLoading('dashboard');
   await loadStats();
   try {
     const rawEvents = await api('GET', 'api/events');
     const tb = document.getElementById('eventsTable');
-    if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No events yet</td></tr>'; return; }
+    if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No events yet</td></tr>'; return; }
     // Deduplicate: keep only the latest event per IP (highest count).
-    // Skipped (whitelisted) events are shown separately — don't dedup them away.
+    // Skipped (whitelisted) events are shown separately.
     const byIp = {};
     const skipped = [];
     rawEvents.forEach(e => {
       if (e.skipped) { skipped.push(e); return; }
       if (!byIp[e.ip] || e.count > byIp[e.ip].count) byIp[e.ip] = e;
     });
-    // Keep only latest skipped per IP
     const skipByIp = {};
     skipped.forEach(e => { if (!skipByIp[e.ip]) skipByIp[e.ip] = e; });
     const events = [...Object.values(byIp), ...Object.values(skipByIp)]
@@ -700,20 +753,43 @@ async function loadDashboard() {
       if (e.skipped) statusBadge = '<span class="badge badge-info" title="Matched pattern but IP is whitelisted or My IP">SKIPPED</span>';
       else if (e.banned) statusBadge = '<span class="badge badge-danger">BANNED</span>';
       else statusBadge = '<span class="badge badge-warn">Attempt</span>';
+      const detailsBtn = e.skipped ? '' : '<button class="btn btn-ghost" style="padding:1px 6px;font-size:10px" onclick="showIpEvents(\'' + esc(e.ip) + '\')">Details</button>';
       return `<tr${e.skipped ? ' style="opacity:0.6"' : ''}>
       <td class="countdown">${relTime(e.time)}</td>
       <td class="mono">${esc(e.ip)}${e.skipped ? ' <span style="font-size:9px;color:var(--primary)">(My IP / WL)</span>' : ''}</td>
       <td style="font-size:12px">${esc(e.source_name || '–')}</td>
       <td>${e.count}</td>
       <td>${statusBadge}</td>
-      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || e.url || '–')}</code></td>
+      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap;max-width:300px;display:inline-block;overflow:hidden;text-overflow:ellipsis">${esc(e.line || e.url || '–')}</code></td>
+      <td>${detailsBtn}</td>
     </tr>`;
     }).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+  hideLoading('dashboard');
 }
+
+// ---- IP Events Detail ----
+async function showIpEvents(ip) {
+  document.getElementById('ipEventsIp').textContent = ip;
+  document.getElementById('ipEventsTable').innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">Loading…</td></tr>';
+  document.getElementById('ipEventsModal').style.display = 'block';
+  try {
+    const events = await api('GET', 'api/events/' + encodeURIComponent(ip));
+    const tb = document.getElementById('ipEventsTable');
+    if (!events.length) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No events recorded for this IP</td></tr>'; return; }
+    tb.innerHTML = events.map(e => `<tr>
+      <td class="countdown">${relTime(e.time)}</td>
+      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
+      <td style="font-size:11px;font-family:monospace">${esc(e.pattern || '–')}</td>
+      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || '–')}</code></td>
+    </tr>`).join('');
+  } catch (e) { document.getElementById('ipEventsTable').innerHTML = '<tr><td colspan="4" style="color:var(--danger)">' + esc(e.message) + '</td></tr>'; }
+}
+function closeIpEvents() { document.getElementById('ipEventsModal').style.display = 'none'; }
 
 // ---- Bans ----
 async function loadBans() {
+  showLoading('bans');
   await loadStats();
   try {
     const bans = await api('GET', 'api/bans');
@@ -731,6 +807,7 @@ async function loadBans() {
       <td><button class="btn btn-ghost btn-sm" onclick="unbanIP('${esc(b.ip)}')">Unban</button></td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+  hideLoading('bans');
 }
 async function addBan() {
   const ip = document.getElementById('banIp').value.trim();
@@ -750,52 +827,75 @@ async function unbanIP(ip) {
 
 // ---- Addons ----
 async function loadSources() {
+  showLoading('sources');
   try {
     const addons = await api('GET', 'api/addons');
     const tb = document.getElementById('sourcesTable');
-    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No addons discovered</td></tr>'; return; }
+    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="8">No addons discovered</td></tr>'; return; }
     window._addonsList = addons;
-    tb.innerHTML = addons.map(a => {
+    const rows = [];
+    addons.forEach(a => {
       const isCustom = !!a.custom;
+      const aid = esc(a.id);
       const stateLabel = isCustom
         ? '<span class="badge badge-muted">Custom</span>'
         : a.state === 'started'
           ? '<span class="badge badge-success">Running</span>'
           : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
           : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
-      const srcParts = [];
+      const rowStyle = isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
+      // Count total sources for rowspan
+      const srcCount = (a.docker_log ? 1 : 0) + (a.files ? a.files.length : 0);
+      const totalRows = Math.max(srcCount, 1);
+      let firstRow = true;
+      // Docker source row
       if (a.docker_log) {
-        const dockerPath = '/addons/' + esc(a.id) + '/logs';
-        srcParts.push('<div style="display:flex;align-items:center;gap:4px"><span title="Supervisor API: ' + dockerPath + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">Docker</span> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource(\'addon:' + esc(a.id) + '\')">Preview</button></div>');
+        const dockerPath = '/addons/' + aid + '/logs';
+        rows.push(`<tr${rowStyle} data-addon-id="${aid}">
+          ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + '</td>' : ''}
+          <td style="font-size:12px"><span title="Supervisor API: ${dockerPath}" style="cursor:help;border-bottom:1px dotted var(--text-muted)">Docker Log</span> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource('addon:${aid}')">Preview</button></td>
+          <td>${stateLabel}</td>
+          <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
+          <td class="countdown">–</td>
+          <td style="font-size:12px">–</td>
+          <td></td>
+        </tr>`);
+        firstRow = false;
       }
+      // File source rows
       if (a.files && a.files.length) {
         a.files.forEach(f => {
-          const sz = f.size ? ' (' + fmtSize(f.size) + ')' : '';
-          const manualBadge = f.manual ? ' <span style="font-size:9px;color:var(--primary)">[manual]</span>' : '';
           const sid = f.source_id || ('file:' + f.path);
-          srcParts.push('<div style="display:flex;align-items:center;gap:4px"><span title="' + esc(f.path) + '" style="cursor:help;border-bottom:1px dotted var(--text-muted)">' + esc(f.name) + sz + '</span>' + manualBadge + ' <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource(\'' + esc(sid) + '\')">Preview</button> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" title="Reassign to different addon" onclick="reassignSource(\'' + esc(sid) + '\',\'' + esc(f.name) + '\')">⇄</button></div>');
+          const manualBadge = f.manual ? ' <span style="font-size:9px;color:var(--primary)">[manual]</span>' : '';
+          rows.push(`<tr${rowStyle} data-addon-id="${aid}">
+            ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + '</td>' : ''}
+            <td style="font-size:12px"><span title="${esc(f.path)}" style="cursor:help;border-bottom:1px dotted var(--text-muted)">${esc(f.name)}</span>${manualBadge} <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource('${esc(sid)}')">Preview</button> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" title="Reassign to different addon" onclick="reassignSource('${esc(sid)}','${esc(f.name)}')">&#8644;</button></td>
+            <td>${stateLabel}</td>
+            <td class="health-cell" data-addon="${aid}" data-file="${esc(f.name)}"><span class="badge badge-muted">–</span></td>
+            <td class="countdown">${f.last_modified ? relTime(f.last_modified) : '–'}</td>
+            <td style="font-size:12px">${f.size ? fmtSize(f.size) : '–'}</td>
+            <td></td>
+          </tr>`);
+          firstRow = false;
         });
       }
-      const lastMod = a.last_modified ? relTime(a.last_modified) : '–';
-      const size = a.total_size ? fmtSize(a.total_size) : '–';
-      const aid = esc(a.id);
-      const rowStyle = isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
-      return `<tr${rowStyle} data-addon-id="${aid}">
-        <td>
-          <label class="toggle">
-            <input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAddon('${aid}', this.checked)">
-            <span class="slider"></span>
-          </label>
-        </td>
-        <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : ''}</td>
-        <td>${stateLabel}</td>
-        <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
-        <td style="font-size:12px">${srcParts.join('') || '–'}</td>
-        <td class="countdown">${lastMod}</td>
-        <td style="font-size:12px">${size}</td>
-      </tr>`;
-    }).join('');
+      // If no sources at all
+      if (totalRows === 0 || (!a.docker_log && (!a.files || !a.files.length))) {
+        rows.push(`<tr${rowStyle} data-addon-id="${aid}">
+          <td><label class="toggle"><input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAddon('${aid}', this.checked)"><span class="slider"></span></label></td>
+          <td><strong>${esc(a.name)}</strong></td>
+          <td style="font-size:12px;color:var(--text-muted)">–</td>
+          <td>${stateLabel}</td>
+          <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
+          <td class="countdown">–</td>
+          <td style="font-size:12px">–</td>
+          <td></td>
+        </tr>`);
+      }
+    });
+    tb.innerHTML = rows.join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+  hideLoading('sources');
 }
 async function toggleAddon(id, enabled) {
   try { await api('POST', 'api/addons/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' monitoring', 'ok'); }
@@ -812,12 +912,13 @@ async function addCustomSource() {
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 async function discoverSources() {
+  showLoading('sources');
   try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(); }
-  catch (e) { toast(e.message, 'err'); }
+  catch (e) { toast(e.message, 'err'); hideLoading('sources'); }
 }
 async function healthCheck() {
+  showLoading('sources');
   try {
-    toast('Running health check…', 'ok');
     const result = await api('POST', 'api/addons/health');
     let okCount = 0, staleCount = 0, emptyCount = 0;
     for (const [addonId, info] of Object.entries(result)) {
@@ -841,6 +942,7 @@ async function healthCheck() {
     }
     toast(`Health: ${okCount} OK, ${staleCount} stale, ${emptyCount} empty`, okCount > 0 && staleCount === 0 ? 'ok' : 'warn');
   } catch (e) { toast('Health check error: ' + e.message, 'err'); }
+  hideLoading('sources');
 }
 async function previewAddon(id, name) {
   document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
@@ -1358,10 +1460,43 @@ async function enableMyIp() {
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 
+// ---- Regex Generator ----
+async function generateRegex() {
+  const sample = document.getElementById('genSample').value.trim();
+  const keywords = document.getElementById('genKeywords').value.trim();
+  const res = document.getElementById('genResult');
+  if (!sample || !keywords) { res.innerHTML = '<span style="color:var(--warn)">Enter both a sample log line and keywords</span>'; return; }
+  try {
+    const data = await api('POST', 'api/rules/generate', { sample, keywords });
+    if (data.ok && data.pattern) {
+      document.getElementById('rulePattern').value = data.pattern;
+      document.getElementById('ruleFlags').value = data.flags || 'IGNORECASE';
+      document.getElementById('ruleTestLine').value = sample;
+      if (data.matched) {
+        res.innerHTML = '<span style="color:var(--success)">Pattern generated — captured IP: ' + esc(data.captured_ip || '?') + '</span>';
+      } else {
+        res.innerHTML = '<span style="color:var(--warn)">Pattern generated but did NOT match the sample. Please refine.</span>';
+      }
+    } else {
+      res.innerHTML = '<span style="color:var(--danger)">' + esc(data.error || 'Generation failed') + '</span>';
+    }
+  } catch (e) { res.innerHTML = '<span style="color:var(--danger)">' + esc(e.message) + '</span>'; }
+}
+
 // ---- Init & Auto-Refresh ----
 loadStats(); loadDashboard();
 autoUpdateMyIp();
-setInterval(() => { if (activeTab === 'dashboard') loadDashboard(); else loadStats(); }, 15000);
+// Auto-refresh: dashboard/bans every 10s, other tabs every 30s
+let _lastRefresh = 0;
+setInterval(() => {
+  const now = Date.now();
+  const fast = (activeTab === 'dashboard' || activeTab === 'bans');
+  const interval = fast ? 10000 : 30000;
+  if (now - _lastRefresh >= interval) {
+    _lastRefresh = now;
+    refreshTab(activeTab);
+  }
+}, 5000);
 </script>
 </body>
 </html>

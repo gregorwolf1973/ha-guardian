@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.19.0"
+VERSION = "1.20.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -147,8 +147,8 @@ DEFAULT_RULE_DEFS = [
     },
     {
         "id": "webtrees_fail",
-        "description": "Webtrees: failed login redirect to /login?username=X&url=Y (HTTP 200)",
-        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"GET\s+/login\?username=[^&\"]+&url[^\"]*\s+HTTP/\S+\"\s+200\s",
+        "description": "Webtrees: failed login POST redirect (HTTP 302)",
+        "pattern": r"(\d{1,3}(?:\.\d{1,3}){3}).*\"POST\s+/login[^\"]*\s+HTTP/\S+\"\s+302\s",
         "flags": "IGNORECASE",
         "enabled": True,
     },
@@ -161,8 +161,8 @@ DEFAULT_RULE_DEFS = [
     },
     {
         "id": "2fauth_login",
-        "description": "2FAuth Laravel log: User login requested from IP",
-        "pattern": r"production\.INFO:.*User login requested.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "description": "2FAuth NPM proxy: 500 on POST /user/login with [Client IP]",
+        "pattern": r"\[.*\] - 500 500 - POST https 2fa\.biker633\.ddnss\.de \"/user/login\" \[Client (\d{1,3}(?:\.\d{1,3}){3})\]",
         "flags": "IGNORECASE",
         "enabled": True,
     },
@@ -1714,6 +1714,15 @@ class Detector:
     def events(self) -> list:
         return list(self._events)
 
+    def clear_window(self, ip: str):
+        """Clear the sliding window for an IP so counting restarts from 0."""
+        self._windows.pop(ip, None)
+        self._ip_events.pop(ip, None)
+
+    def get_ip_events(self, ip: str) -> list:
+        """Return last matched log lines for a given IP."""
+        return list(self._ip_events.get(ip, []))
+
     async def cleanup_windows_loop(self):
         """Periodically remove expired IP entries from the tracking window."""
         while True:
@@ -2012,6 +2021,8 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         ip = req.match_info["ip"]
         ok = await bans.unban(ip)
         if ok:
+            # Clear the detector window so counter restarts from 0
+            detector.clear_window(ip)
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "not found"}, status=404)
 
@@ -2460,6 +2471,66 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
 
+    async def handle_ip_events(req):
+        """Return recent matched log lines for a specific IP."""
+        ip = req.match_info["ip"]
+        events = detector.get_ip_events(ip)
+        return web.json_response(events[:20])
+
+    async def handle_generate_regex(req):
+        """Generate a regex pattern from a sample log line and keywords."""
+        try:
+            data = await req.json()
+            sample = data.get("sample", "")
+            keywords = data.get("keywords", "").strip()
+            if not sample or not keywords:
+                return web.json_response(
+                    {"ok": False, "error": "sample and keywords required"}, status=400
+                )
+            # Split keywords by whitespace or comma
+            kw_list = [k.strip() for k in re.split(r"[\s,]+", keywords) if k.strip()]
+            # Build regex: escape each keyword, join with .*?, capture IP
+            parts = []
+            for kw in kw_list:
+                parts.append(re.escape(kw))
+            keyword_pattern = r".*?".join(parts)
+            # Determine if the IP likely appears before or after the keywords in the sample
+            ip_re = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+            ip_match = ip_re.search(sample)
+            kw_first_pos = len(sample)
+            for kw in kw_list:
+                pos = sample.lower().find(kw.lower())
+                if pos >= 0 and pos < kw_first_pos:
+                    kw_first_pos = pos
+            ip_capture = r"(\d{1,3}(?:\.\d{1,3}){3})"
+            if ip_match and ip_match.start() < kw_first_pos:
+                # IP comes before keywords
+                pattern = ip_capture + r".*?" + keyword_pattern
+            else:
+                # IP comes after keywords (or inside [Client IP])
+                # Check for [Client IP] pattern
+                if "[Client" in sample or "[client" in sample:
+                    pattern = keyword_pattern + r".*?\[Client\s+" + ip_capture + r"\]"
+                else:
+                    pattern = keyword_pattern + r".*?" + ip_capture
+            # Verify it matches the sample
+            try:
+                m = re.search(pattern, sample, re.IGNORECASE)
+                matched = bool(m)
+                captured_ip = m.group(1) if m else None
+            except re.error:
+                matched = False
+                captured_ip = None
+            return web.json_response({
+                "ok": True,
+                "pattern": pattern,
+                "flags": "IGNORECASE",
+                "matched": matched,
+                "captured_ip": captured_ip,
+            })
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/stats", handle_stats)
     app.router.add_get("/api/events", handle_events)
@@ -2500,6 +2571,8 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_delete("/api/rules/{id}", handle_delete_rule)
     app.router.add_post("/api/rules/reset", handle_reset_rules)
     app.router.add_post("/api/rules/test", handle_test_rule)
+    app.router.add_get("/api/events/{ip}", handle_ip_events)
+    app.router.add_post("/api/rules/generate", handle_generate_regex)
 
     return app
 
