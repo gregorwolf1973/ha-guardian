@@ -6,7 +6,8 @@ RUN apk add --no-cache \
         py3-aiohttp \
         py3-yaml \
         iptables \
-        ip6tables && \
+        ip6tables \
+        nftables && \
     pip3 install --no-cache-dir --break-system-packages \
         aiohttp \
         pyyaml || true

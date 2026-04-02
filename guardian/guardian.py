@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.20.4"
+VERSION = "1.21.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1355,74 +1355,88 @@ class SourceManager:
 class BanManager:
     # iptables chain name — all Guardian rules go here for easy flush
     _CHAIN = "GUARDIAN"
+    # nftables table/set/chain names
+    _NFT_TABLE = "guardian"
+    _NFT_SET   = "blocklist"
+    _NFT_CHAIN = "input"
 
     def __init__(self, config: Config):
         self.config = config
         self._bans: dict = {}
         self._evidence: dict = {}   # ip -> list of event dicts
         self._lock = asyncio.Lock()
-        self._iptables_available = self._check_iptables()
+        self._ipt_bin, self._use_nft = self._detect_firewall_backend()
+        self._iptables_available = self._ipt_bin is not None or self._use_nft
         self._load()
+
+    # ------------------------------------------------------------------
+    # Firewall backend detection
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _detect_firewall_backend() -> tuple:
+        """Return (ipt_binary_or_None, use_nft_bool).
+        Tries iptables-nft first (works on nftables kernels like HassOS),
+        then iptables legacy, then native nft."""
+        # Try iptables variants (prefer nft-backed so it works on HassOS)
+        for binary in ["iptables-nft", "iptables", "iptables-legacy"]:
+            try:
+                r = subprocess.run(
+                    [binary, "-L", "INPUT", "-n"],
+                    capture_output=True, timeout=3
+                )
+                if r.returncode == 0:
+                    log.info("Firewall backend: %s — enforcement active", binary)
+                    return binary, False
+                err = r.stderr.decode(errors="replace").strip()
+                log.debug("Firewall candidate %s failed (rc=%d): %s", binary, r.returncode, err)
+            except FileNotFoundError:
+                log.debug("Firewall candidate %s not found in PATH", binary)
+            except Exception as e:
+                log.debug("Firewall candidate %s error: %s", binary, e)
+        # Fall back to native nftables
+        try:
+            r = subprocess.run(["nft", "list", "tables"], capture_output=True, timeout=3)
+            if r.returncode == 0:
+                log.info("Firewall backend: nft (nftables) — enforcement active")
+                return None, True
+            log.debug("nft check failed (rc=%d)", r.returncode)
+        except FileNotFoundError:
+            log.debug("nft not found in PATH")
+        except Exception as e:
+            log.debug("nft check error: %s", e)
+        log.warning("No working firewall backend found — firewall enforcement disabled")
+        return None, False
 
     # ------------------------------------------------------------------
     # iptables helpers
     # ------------------------------------------------------------------
-    @staticmethod
-    def _check_iptables() -> bool:
-        """Return True if iptables is available and we have NET_ADMIN."""
-        try:
-            r = subprocess.run(
-                ["iptables", "-L", "INPUT", "-n"],
-                capture_output=True, timeout=3
-            )
-            if r.returncode == 0:
-                log.info("iptables available — firewall enforcement active")
-                return True
-            err = r.stderr.decode(errors="replace").strip()
-            log.warning("iptables check failed (rc=%d): %s", r.returncode, err)
-            return False
-        except FileNotFoundError:
-            log.warning("iptables not found in PATH — install iptables package")
-            return False
-        except PermissionError as e:
-            log.warning("iptables permission denied — Protected Mode may be ON: %s", e)
-            return False
-        except Exception as e:
-            log.warning("iptables check failed: %s", e)
-            return False
-
     def _ensure_chain(self):
         """Create GUARDIAN chain and hook it into INPUT if not present."""
         try:
-            # Create chain if missing
-            subprocess.run(["iptables", "-N", self._CHAIN],
+            subprocess.run([self._ipt_bin, "-N", self._CHAIN],
                            capture_output=True, timeout=3)
-            # Hook into INPUT if not already there
             r = subprocess.run(
-                ["iptables", "-C", "INPUT", "-j", self._CHAIN],
+                [self._ipt_bin, "-C", "INPUT", "-j", self._CHAIN],
                 capture_output=True, timeout=3
             )
             if r.returncode != 0:
                 subprocess.run(
-                    ["iptables", "-I", "INPUT", "1", "-j", self._CHAIN],
+                    [self._ipt_bin, "-I", "INPUT", "1", "-j", self._CHAIN],
                     check=True, timeout=3
                 )
         except Exception as e:
             log.warning("iptables chain setup failed: %s", e)
 
     def _ipt_ban(self, ip: str):
-        if not self._iptables_available:
-            return
         try:
             self._ensure_chain()
-            # Check if rule already exists
             r = subprocess.run(
-                ["iptables", "-C", self._CHAIN, "-s", ip, "-j", "DROP"],
+                [self._ipt_bin, "-C", self._CHAIN, "-s", ip, "-j", "DROP"],
                 capture_output=True, timeout=3
             )
             if r.returncode != 0:
                 subprocess.run(
-                    ["iptables", "-A", self._CHAIN, "-s", ip, "-j", "DROP"],
+                    [self._ipt_bin, "-A", self._CHAIN, "-s", ip, "-j", "DROP"],
                     check=True, timeout=3
                 )
             log.debug("iptables: blocked %s", ip)
@@ -1430,29 +1444,104 @@ class BanManager:
             log.warning("iptables ban failed for %s: %s", ip, e)
 
     def _ipt_unban(self, ip: str):
-        if not self._iptables_available:
-            return
         try:
             subprocess.run(
-                ["iptables", "-D", self._CHAIN, "-s", ip, "-j", "DROP"],
+                [self._ipt_bin, "-D", self._CHAIN, "-s", ip, "-j", "DROP"],
                 capture_output=True, timeout=3
             )
             log.debug("iptables: unblocked %s", ip)
         except Exception as e:
             log.warning("iptables unban failed for %s: %s", ip, e)
 
-    def restore_iptables(self):
-        """Re-apply iptables rules for all currently active bans (called on startup)."""
+    # ------------------------------------------------------------------
+    # nftables helpers (used when HassOS has no legacy iptables kernel module)
+    # ------------------------------------------------------------------
+    def _nft_run(self, script: str) -> bool:
+        """Run an nft script passed via stdin. Returns True on success."""
+        try:
+            r = subprocess.run(
+                ["nft", "-f", "-"],
+                input=script.encode(),
+                capture_output=True, timeout=3
+            )
+            if r.returncode != 0:
+                log.debug("nft script failed (rc=%d): %s", r.returncode,
+                          r.stderr.decode(errors="replace").strip())
+            return r.returncode == 0
+        except Exception as e:
+            log.warning("nft run error: %s", e)
+            return False
+
+    def _nft_setup(self):
+        """Ensure nftables table, set, and drop rule exist."""
+        t, s, c = self._NFT_TABLE, self._NFT_SET, self._NFT_CHAIN
+        # Check if set already has the drop rule wired up
+        r = subprocess.run(
+            ["nft", "list", "table", "inet", t],
+            capture_output=True, timeout=3
+        )
+        if r.returncode == 0 and f"saddr @{s} drop" in r.stdout.decode(errors="replace"):
+            return  # already set up
+        self._nft_run(
+            f"add table inet {t}\n"
+            f"add set inet {t} {s} {{ type ipv4_addr; }}\n"
+            f"add chain inet {t} {c} {{ type filter hook input priority -10; }}\n"
+            f"add rule inet {t} {c} ip saddr @{s} drop\n"
+        )
+
+    def _nft_ban(self, ip: str):
+        try:
+            self._nft_setup()
+            self._nft_run(
+                f"add element inet {self._NFT_TABLE} {self._NFT_SET} {{ {ip} }}\n"
+            )
+            log.debug("nft: blocked %s", ip)
+        except Exception as e:
+            log.warning("nft ban failed for %s: %s", ip, e)
+
+    def _nft_unban(self, ip: str):
+        try:
+            self._nft_run(
+                f"delete element inet {self._NFT_TABLE} {self._NFT_SET} {{ {ip} }}\n"
+            )
+            log.debug("nft: unblocked %s", ip)
+        except Exception as e:
+            log.warning("nft unban failed for %s: %s", ip, e)
+
+    # ------------------------------------------------------------------
+    # Public ban/unban (backend-agnostic)
+    # ------------------------------------------------------------------
+    def _fw_ban(self, ip: str):
         if not self._iptables_available:
-            log.info("iptables not available — skipping firewall rules")
             return
-        self._ensure_chain()
+        if self._use_nft:
+            self._nft_ban(ip)
+        else:
+            self._ipt_ban(ip)
+
+    def _fw_unban(self, ip: str):
+        if not self._iptables_available:
+            return
+        if self._use_nft:
+            self._nft_unban(ip)
+        else:
+            self._ipt_unban(ip)
+
+    def restore_iptables(self):
+        """Re-apply firewall rules for all currently active bans (called on startup)."""
+        if not self._iptables_available:
+            log.info("No firewall backend — skipping firewall rules")
+            return
+        if self._use_nft:
+            self._nft_setup()
+        else:
+            self._ensure_chain()
         count = 0
         for ip in self._bans:
-            self._ipt_ban(ip)
+            self._fw_ban(ip)
             count += 1
         if count:
-            log.info("iptables: restored %d ban rule(s)", count)
+            log.info("Firewall: restored %d ban rule(s)", count)
 
     def _load(self):
         try:
@@ -1521,7 +1610,7 @@ class BanManager:
             if evidence is not None:
                 self._evidence[ip] = evidence
             await self._flush()
-        self._ipt_ban(ip)
+        self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
         return True
 
@@ -1535,7 +1624,7 @@ class BanManager:
             del self._bans[ip]
             self._evidence.pop(ip, None)
             await self._flush()
-        self._ipt_unban(ip)
+        self._fw_unban(ip)
         log.info("Unbanned %s", ip)
         return True
 
@@ -2192,11 +2281,18 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
                             addon_slug = info.get("slug", slug)
             except Exception as e:
                 log.debug("Could not fetch addon self info: %s", e)
+        if bans._use_nft:
+            fw_backend = "nft"
+        elif bans._ipt_bin:
+            fw_backend = bans._ipt_bin
+        else:
+            fw_backend = None
         return web.json_response({
             "protected_mode": protected,
             "iptables_available": bans._iptables_available,
+            "firewall_backend": fw_backend,
             "addon_slug": addon_slug,
-            "host_network": True,  # declared in config.yaml
+            "host_network": True,
         })
 
     async def handle_set_protection(req):
@@ -2227,12 +2323,13 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
                     if resp.status == 200:
                         result = await resp.json()
                         if result.get("result") == "ok":
-                            # Re-check iptables availability after toggling
-                            bans._iptables_available = bans._check_iptables()
+                            # Re-detect firewall backend after toggling
+                            bans._ipt_bin, bans._use_nft = bans._detect_firewall_backend()
+                            bans._iptables_available = bans._ipt_bin is not None or bans._use_nft
                             if bans._iptables_available:
                                 bans.restore_iptables()
                             log.info(
-                                "Protected mode %s — iptables %s",
+                                "Protected mode %s — firewall %s",
                                 "enabled" if enable else "disabled",
                                 "available" if bans._iptables_available else "NOT available",
                             )

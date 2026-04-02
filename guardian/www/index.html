@@ -1087,19 +1087,20 @@ async function loadSystemStatus() {
     _systemState = sys;
     if (!banner) return;  // Not on settings tab
     banner.style.display = 'flex';
+    const fwBackend = sys.firewall_backend || 'iptables';
     if (sys.iptables_available) {
       // Firewall is active
       banner.className = 'system-banner ok';
-      title.textContent = 'Firewall active (iptables)';
+      title.textContent = 'Firewall active (' + fwBackend + ')';
       desc.textContent = 'Banned IPs are blocked at the network level. Protected Mode: ' +
         (sys.protected_mode === false ? 'OFF' : sys.protected_mode === true ? 'ON' : 'unknown');
       btn.style.display = 'none';
       restartBtn.style.display = 'none';
     } else if (sys.protected_mode === true) {
-      // Protected mode is ON — that's why iptables doesn't work
+      // Protected mode is ON — that's why firewall doesn't work
       banner.className = 'system-banner warn';
       title.textContent = 'Firewall NOT active — Protected Mode is ON';
-      desc.innerHTML = 'Protected Mode prevents Guardian from using iptables to block IPs at the network level. ' +
+      desc.innerHTML = 'Protected Mode prevents Guardian from blocking IPs at the network level. ' +
         'Bans are only written to <code>ip_bans.yaml</code> but <b>not enforced</b>.<br>' +
         'Disable Protected Mode and restart the addon to enable real IP blocking.';
       btn.textContent = 'Disable Protected Mode';
@@ -1107,10 +1108,11 @@ async function loadSystemStatus() {
       btn.style.display = '';
       restartBtn.style.display = 'none';
     } else if (sys.protected_mode === false) {
-      // Protected mode is off but iptables still not available — needs restart
+      // Protected mode is off but firewall still not available — needs restart
       banner.className = 'system-banner warn';
       title.textContent = 'Firewall NOT active — Restart required';
-      desc.textContent = 'Protected Mode is already disabled, but the addon needs a restart for iptables to become available.';
+      desc.textContent = 'Protected Mode is disabled, but the addon needs a restart to activate the firewall ' +
+        '(tried iptables-nft, iptables, and nft — none available yet).';
       btn.style.display = 'none';
       restartBtn.style.display = '';
     } else {
