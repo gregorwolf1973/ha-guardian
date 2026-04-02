@@ -285,6 +285,7 @@
     <h2>Monitored Addons</h2>
     <div style="display:flex;gap:6px">
       <button class="btn btn-primary btn-sm" onclick="discoverSources()">Discover</button>
+      <button class="btn btn-ghost btn-sm" onclick="healthCheck()">Health Check</button>
       <button class="btn btn-ghost btn-sm" onclick="loadSources()">↻ Refresh</button>
     </div>
   </div>
@@ -302,10 +303,10 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Monitor</th><th>Addon</th><th>Status</th><th>Sources</th><th>Last Modified</th><th>Size</th><th>Preview</th></tr>
+        <tr><th>Monitor</th><th>Addon</th><th>Status</th><th>Health</th><th>Sources</th><th>Last Modified</th><th>Size</th><th>Preview</th></tr>
       </thead>
       <tbody id="sourcesTable">
-        <tr class="empty-row"><td colspan="7">No addons discovered</td></tr>
+        <tr class="empty-row"><td colspan="8">No addons discovered</td></tr>
       </tbody>
     </table>
   </div>
@@ -386,6 +387,24 @@
           <label>Alert window (hours)</label>
           <input id="cfgAlertHours" type="number" min="1" max="168">
           <div class="hint">Time window for the alerts summary.</div>
+        </div>
+      </div>
+      <div class="field-group">
+        <h3>Scanning</h3>
+        <div class="form-row">
+          <label>File scan interval (seconds)</label>
+          <input id="cfgScanInterval" type="number" min="1" max="60">
+          <div class="hint">How often log files are checked for new entries.</div>
+        </div>
+        <div class="form-row">
+          <label>Addon poll interval (seconds)</label>
+          <input id="cfgAddonPoll" type="number" min="5" max="300">
+          <div class="hint">How often addon Docker logs are polled.</div>
+        </div>
+        <div class="form-row">
+          <label>Status log interval (minutes)</label>
+          <input id="cfgLogInterval" type="number" min="1" max="60">
+          <div class="hint">How often a status summary is written to the Guardian log.</div>
         </div>
       </div>
       <div class="field-group" style="grid-column: 1 / -1">
@@ -646,7 +665,7 @@ async function loadSources() {
   try {
     const addons = await api('GET', 'api/addons');
     const tb = document.getElementById('sourcesTable');
-    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No addons discovered</td></tr>'; return; }
+    if (!addons.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="8">No addons discovered</td></tr>'; return; }
     tb.innerHTML = addons.map(a => {
       const isCustom = !!a.custom;
       const stateLabel = isCustom
@@ -663,7 +682,7 @@ async function loadSources() {
       const aid = esc(a.id);
       const aname = (a.name || '').replace(/'/g, "\\'");
       const rowStyle = isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
-      return `<tr${rowStyle}>
+      return `<tr${rowStyle} data-addon-id="${aid}">
         <td>
           <label class="toggle">
             <input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAddon('${aid}', this.checked)">
@@ -672,6 +691,7 @@ async function loadSources() {
         </td>
         <td><strong>${esc(a.name)}</strong>${isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : ''}</td>
         <td>${stateLabel}</td>
+        <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
         <td style="font-size:12px">${srcInfo.join(' + ') || '–'}</td>
         <td class="countdown">${lastMod}</td>
         <td style="font-size:12px">${size}</td>
@@ -698,6 +718,33 @@ async function discoverSources() {
   try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(); }
   catch (e) { toast(e.message, 'err'); }
 }
+async function healthCheck() {
+  try {
+    toast('Running health check…', 'ok');
+    const result = await api('POST', 'api/addons/health');
+    let okCount = 0, staleCount = 0, emptyCount = 0;
+    for (const [addonId, info] of Object.entries(result)) {
+      const cell = document.querySelector(`.health-cell[data-addon="${CSS.escape(addonId)}"]`);
+      const row = cell ? cell.closest('tr') : null;
+      if (!cell) continue;
+      if (info.status === 'ok') {
+        cell.innerHTML = '<span class="badge badge-success">OK</span>';
+        if (row) row.style.background = '';
+        okCount++;
+      } else if (info.status === 'stale') {
+        const newest = info.newest ? relTime(info.newest) : 'unknown';
+        cell.innerHTML = '<span class="badge badge-danger" title="Newest: ' + esc(newest) + '">Stale</span>';
+        if (row) row.style.background = 'rgba(255,59,48,0.08)';
+        staleCount++;
+      } else {
+        cell.innerHTML = '<span class="badge badge-muted">Empty</span>';
+        if (row) row.style.background = 'rgba(255,59,48,0.05)';
+        emptyCount++;
+      }
+    }
+    toast(`Health: ${okCount} OK, ${staleCount} stale, ${emptyCount} empty`, okCount > 0 && staleCount === 0 ? 'ok' : 'warn');
+  } catch (e) { toast('Health check error: ' + e.message, 'err'); }
+}
 async function previewAddon(id, name) {
   document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
   document.getElementById('previewContent').textContent = 'Loading…';
@@ -721,7 +768,7 @@ async function previewAddon(id, name) {
 
 // ---- Whitelist ----
 async function loadWhitelist() {
-  _renderAutoWlStatus();
+  _renderMyIpStatus();
   try {
     const list = await api('GET', 'api/whitelist');
     const tb = document.getElementById('whitelistTable');
@@ -767,6 +814,9 @@ async function loadSettings() {
     document.getElementById('cfgWindow').value = c.window_minutes;
     document.getElementById('cfgDuration').value = c.ban_duration_minutes;
     document.getElementById('cfgAlertHours').value = c.alert_window_hours;
+    document.getElementById('cfgScanInterval').value = c.scan_interval_seconds || 1;
+    document.getElementById('cfgAddonPoll').value = c.addon_poll_interval || 15;
+    document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     document.getElementById('cfgDomains').value = (c.trusted_domains || []).join(', ');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
@@ -779,6 +829,9 @@ async function saveSettings(ev) {
       window_minutes: parseInt(document.getElementById('cfgWindow').value),
       ban_duration_minutes: parseInt(document.getElementById('cfgDuration').value),
       alert_window_hours: parseInt(document.getElementById('cfgAlertHours').value),
+      scan_interval_seconds: parseInt(document.getElementById('cfgScanInterval').value),
+      addon_poll_interval: parseInt(document.getElementById('cfgAddonPoll').value),
+      log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
       trusted_domains: domains,
     });
     toast('Settings saved', 'ok'); loadStats(); loadSettings();
@@ -1002,72 +1055,71 @@ async function testRule() {
   } catch (e) { res.innerHTML = '<span style="color:var(--danger)">' + esc(e.message) + '</span>'; }
 }
 
-// ---- Auto-Whitelist My IP ----
-const AW_IP_KEY    = 'guardian_auto_ip';
-const AW_OPTOUT_KEY = 'guardian_auto_ip_optout';
-
-function _renderAutoWlStatus() {
+// ---- My IP (server-side, separate from whitelist) ----
+async function _renderMyIpStatus() {
   const el = document.getElementById('autoWlStatus');
   if (!el) return;
-  if (localStorage.getItem(AW_OPTOUT_KEY) === '1') {
-    el.innerHTML = '<span style="color:var(--text-muted)">Auto-whitelist deactivated.</span>'
-      + ' <button class="btn btn-ghost btn-sm" onclick="enableAutoWl()">Enable</button>';
-  } else {
-    const ip = localStorage.getItem(AW_IP_KEY);
-    if (ip) {
-      el.innerHTML = '<span style="color:var(--success)">✓ Your current IP <strong class="mono">' + esc(ip) + '</strong> is auto-whitelisted (updated on every page load)</span>'
-        + ' <button class="btn btn-ghost btn-sm" onclick="disableAutoWl()">Disable</button>';
+  try {
+    const data = await api('GET', 'api/my-ip');
+    if (data.enabled && data.ip) {
+      el.innerHTML = '<span style="color:var(--success)">&#10003; My IP: <strong class="mono">' + esc(data.ip) + '</strong> (auto-protected, updated on every page load)</span>'
+        + ' <button class="btn btn-ghost btn-sm" onclick="disableMyIp()">Disable</button>';
     } else {
-      el.innerHTML = '<span style="color:var(--text-muted)">Fetching your IP…</span>';
+      el.innerHTML = '<span style="color:var(--text-muted)">My IP protection disabled.</span>'
+        + ' <button class="btn btn-ghost btn-sm" onclick="enableMyIp()">Enable</button>';
     }
+  } catch (_) {
+    el.innerHTML = '<span style="color:var(--text-muted)">Could not load My IP status</span>';
   }
 }
 
-async function autoWhitelistMyIp() {
-  if (localStorage.getItem(AW_OPTOUT_KEY) === '1') {
-    _renderAutoWlStatus();
-    return;
-  }
+async function autoUpdateMyIp() {
   try {
+    const serverState = await api('GET', 'api/my-ip');
+    if (!serverState.enabled) {
+      _renderMyIpStatus();
+      return;
+    }
     const info = await fetch('https://ipinfo.io/json').then(r => r.json());
     const newIp = (info.ip || '').trim();
     if (!newIp) return;
-    const prevIp = localStorage.getItem(AW_IP_KEY);
-    if (prevIp && prevIp !== newIp) {
-      // IP changed — remove old entry silently
-      try { await api('POST', 'api/whitelist/delete', { entry: prevIp }); } catch (_) {}
+    if (newIp !== serverState.ip) {
+      await api('POST', 'api/my-ip', { ip: newIp });
     }
-    if (!prevIp || prevIp !== newIp) {
-      try { await api('POST', 'api/whitelist', { entry: newIp }); } catch (_) {}
-    }
-    localStorage.setItem(AW_IP_KEY, newIp);
-    _renderAutoWlStatus();
+    _renderMyIpStatus();
   } catch (e) {
     const el = document.getElementById('autoWlStatus');
     if (el) el.innerHTML = '<span style="color:var(--text-muted)">Could not determine your public IP (ipinfo.io unreachable)</span>';
   }
-}
-
-function disableAutoWl() {
-  if (!confirm('Disable auto-whitelist?\n\nYour IP will be removed from the whitelist. You could be banned if you make too many failed login attempts.\n\nContinue?')) return;
-  localStorage.setItem(AW_OPTOUT_KEY, '1');
-  const prevIp = localStorage.getItem(AW_IP_KEY);
-  if (prevIp) {
-    api('POST', 'api/whitelist/delete', { entry: prevIp }).catch(() => {});
-    localStorage.removeItem(AW_IP_KEY);
+  // Migration: clean up old localStorage entries + remove old IP from whitelist
+  const oldIp = localStorage.getItem('guardian_auto_ip');
+  if (oldIp) {
+    try { await api('POST', 'api/whitelist/delete', { entry: oldIp }); } catch (_) {}
+    localStorage.removeItem('guardian_auto_ip');
+    localStorage.removeItem('guardian_auto_ip_optout');
+    loadWhitelist();
   }
-  _renderAutoWlStatus();
-  loadWhitelist();
 }
 
-function enableAutoWl() {
-  localStorage.removeItem(AW_OPTOUT_KEY);
-  autoWhitelistMyIp().then(() => loadWhitelist());
+async function disableMyIp() {
+  if (!confirm('Disable My IP protection?\n\nYou could be banned if you make too many failed login attempts.\n\nContinue?')) return;
+  try { await api('DELETE', 'api/my-ip'); } catch (_) {}
+  _renderMyIpStatus();
+}
+
+async function enableMyIp() {
+  try {
+    const info = await fetch('https://ipinfo.io/json').then(r => r.json());
+    const newIp = (info.ip || '').trim();
+    if (!newIp) { toast('Could not detect your IP', 'err'); return; }
+    await api('POST', 'api/my-ip', { ip: newIp });
+    _renderMyIpStatus();
+  } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 
 // ---- Init & Auto-Refresh ----
 loadStats(); loadDashboard();
-autoWhitelistMyIp();
+autoUpdateMyIp();
 setInterval(() => { if (activeTab === 'dashboard') loadDashboard(); else loadStats(); }, 15000);
 </script>
 </body>

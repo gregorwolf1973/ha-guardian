@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.17.2"
+VERSION = "1.18.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -437,6 +437,16 @@ class PersistentState:
         self._data["trusted_domains"] = value
         self.save()
 
+    # -- My IP (dynamic, auto-updated, separate from whitelist) --
+    @property
+    def my_ip(self) -> Optional[str]:
+        return self._data.get("my_ip")
+
+    @my_ip.setter
+    def my_ip(self, value: Optional[str]):
+        self._data["my_ip"] = value
+        self.save()
+
     # -- Config overrides --
     @property
     def config_overrides(self) -> dict:
@@ -459,6 +469,9 @@ class Config:
         self.window_minutes: int = 5
         self.ban_duration_minutes: int = 240
         self.alert_window_hours: int = 24
+        self.scan_interval_seconds: int = 1
+        self.addon_poll_interval: int = 15
+        self.log_interval_minutes: int = 5
         self.log_file: str = LOG_FILE_DEFAULT
         self._load()
 
@@ -471,6 +484,9 @@ class Config:
             self.window_minutes = max(1, int(d.get("window_minutes", 5)))
             self.ban_duration_minutes = max(0, int(d.get("ban_duration_minutes", 240)))
             self.alert_window_hours = max(1, int(d.get("alert_window_hours", 24)))
+            self.scan_interval_seconds = max(1, int(d.get("scan_interval_seconds", 1)))
+            self.addon_poll_interval = max(5, int(d.get("addon_poll_interval", 15)))
+            self.log_interval_minutes = max(1, int(d.get("log_interval_minutes", 5)))
             self.log_file = d.get("log_file", LOG_FILE_DEFAULT)
 
             # Seed state from options.json if state has empty whitelist
@@ -497,6 +513,12 @@ class Config:
             self.ban_duration_minutes = max(0, int(ov["ban_duration_minutes"]))
         if "alert_window_hours" in ov:
             self.alert_window_hours = max(1, int(ov["alert_window_hours"]))
+        if "scan_interval_seconds" in ov:
+            self.scan_interval_seconds = max(1, int(ov["scan_interval_seconds"]))
+        if "addon_poll_interval" in ov:
+            self.addon_poll_interval = max(5, int(ov["addon_poll_interval"]))
+        if "log_interval_minutes" in ov:
+            self.log_interval_minutes = max(1, int(ov["log_interval_minutes"]))
 
     # HA internal networks that should never be banned
     HA_DEFAULT_WHITELIST = [
@@ -538,6 +560,9 @@ class Config:
         self._state.set_override("window_minutes", self.window_minutes)
         self._state.set_override("ban_duration_minutes", self.ban_duration_minutes)
         self._state.set_override("alert_window_hours", self.alert_window_hours)
+        self._state.set_override("scan_interval_seconds", self.scan_interval_seconds)
+        self._state.set_override("addon_poll_interval", self.addon_poll_interval)
+        self._state.set_override("log_interval_minutes", self.log_interval_minutes)
         # Whitelist and trusted_domains are auto-saved via property setters
 
     def to_dict(self) -> dict:
@@ -546,6 +571,9 @@ class Config:
             "window_minutes": self.window_minutes,
             "ban_duration_minutes": self.ban_duration_minutes,
             "alert_window_hours": self.alert_window_hours,
+            "scan_interval_seconds": self.scan_interval_seconds,
+            "addon_poll_interval": self.addon_poll_interval,
+            "log_interval_minutes": self.log_interval_minutes,
             "log_file": self.log_file,
             "whitelist": self.whitelist,
             "trusted_domains": self.trusted_domains,
@@ -556,6 +584,14 @@ class Config:
             addr = ip_address(ip)
         except ValueError:
             return False
+        # Check "my ip" (dynamic, auto-updated)
+        my = self._state.my_ip
+        if my:
+            try:
+                if addr == ip_address(my):
+                    return True
+            except ValueError:
+                pass
         for entry in self.whitelist:
             try:
                 if "/" in entry:
@@ -1081,6 +1117,53 @@ class SourceManager:
         log.info("Manually added custom source: %s", path)
         return True, ""
 
+    async def health_check(self) -> dict:
+        """Check each enabled source for recent activity (entries within last 7 days).
+        Returns {addon_id: {"status": "ok"|"stale"|"empty", "newest": iso|None}}
+        """
+        HEALTH_DAYS = 7
+        cutoff = datetime.now(timezone.utc) - timedelta(days=HEALTH_DAYS)
+        results = {}
+
+        # Group sources by addon (same logic as get_addons)
+        addon_sources: dict = {}  # addon_id -> [src, ...]
+        for src in self._sources.values():
+            if not src.get("enabled"):
+                continue
+            addon_id = None
+            if src["type"] == "addon":
+                addon_id = src.get("slug", "")
+                if addon_id == "core":
+                    addon_id = "__core__"
+            elif src["type"] == "file":
+                addon_id = src.get("addon_slug") or _extract_addon_slug_from_path(src.get("path", ""))
+                if not addon_id and src.get("path") == self.config.log_file:
+                    addon_id = "__core__"
+                if not addon_id and src.get("custom"):
+                    addon_id = src["id"]
+            if not addon_id:
+                continue
+            addon_sources.setdefault(addon_id, []).append(src)
+
+        for addon_id, sources in addon_sources.items():
+            newest_ts = None
+            for src in sources:
+                lines = await self.preview_source(src["id"], 200)
+                for line in reversed(lines):
+                    ts = _parse_line_timestamp(line)
+                    if ts and (newest_ts is None or ts > newest_ts):
+                        newest_ts = ts
+                        break  # newest line with timestamp found for this source
+
+            if newest_ts is None:
+                results[addon_id] = {"status": "empty", "newest": None}
+            elif newest_ts < cutoff:
+                results[addon_id] = {"status": "stale", "newest": newest_ts.isoformat()}
+            else:
+                results[addon_id] = {"status": "ok", "newest": newest_ts.isoformat()}
+
+        return results
+
     def preview_addon(self, addon_id: str) -> Optional[str]:
         """Find the best source ID for previewing an addon's logs.
         Prefers the most recently modified file, falls back to docker log.
@@ -1220,7 +1303,7 @@ class BanManager:
     async def ban(self, ip, reason="auto", manual=False, attempts=0,
                   duration_minutes=None, source="", evidence=None) -> bool:
         if self.config.is_whitelisted(ip):
-            log.info("IP %s is whitelisted — skipping ban", ip)
+            log.debug("IP %s is whitelisted — skipping ban", ip)
             return False
         dur = duration_minutes if duration_minutes is not None else self.config.ban_duration_minutes
         now = datetime.now(timezone.utc)
@@ -1296,7 +1379,7 @@ class BanManager:
                     for ip in expired:
                         if ip in self._bans:
                             del self._bans[ip]
-                            log.info("Ban expired for %s", ip)
+                            log.debug("Ban expired for %s", ip)
                     await self._flush()
 
 
@@ -1396,13 +1479,13 @@ class Detector:
         full_event["count"] = len(dq) if not banned_now else self.config.max_attempts
         full_event["banned"] = banned_now
         self._events.appendleft(full_event)
-        log.warning(
-            "Failed login from %s via %s (%d/%d)%s",
-            ip, source_name,
-            len(dq) if not banned_now else self.config.max_attempts,
-            self.config.max_attempts,
-            " — BANNED" if banned_now else "",
-        )
+        if banned_now:
+            log.warning("BANNED %s (%d attempts via %s)", ip, self.config.max_attempts, source_name)
+        else:
+            log.debug(
+                "Failed login from %s via %s (%d/%d)",
+                ip, source_name, len(dq), self.config.max_attempts,
+            )
 
     def stats(self) -> dict:
         uptime = int((datetime.now(timezone.utc) - self._started).total_seconds())
@@ -1442,6 +1525,7 @@ class LogScanner:
         self._addon_state: dict = {}  # slug -> last_length
         # Buffer of recent unmatched auth-related lines (for debugging)
         self.unmatched_lines: deque = deque(maxlen=200)
+        self._last_status_log: float = 0  # timestamp of last periodic status log
 
     async def run(self):
         await self.source_mgr.discover()
@@ -1451,18 +1535,28 @@ class LogScanner:
         for s in enabled:
             log.info("  Active: [%s] %s (%s)", s.get("type"), s.get("name"),
                      s.get("path", s.get("slug", "")))
+        self._last_status_log = datetime.now().timestamp()
 
         _addon_tick = 0
-        _ADDON_POLL_INTERVAL = 15  # poll addon Docker logs every N seconds
         while True:
             for src in self.source_mgr.get_enabled("file"):
                 await self._scan_file(src)
             _addon_tick += 1
-            if _addon_tick >= _ADDON_POLL_INTERVAL:
+            if _addon_tick >= self.config.addon_poll_interval:
                 _addon_tick = 0
                 for src in self.source_mgr.get_enabled("addon"):
                     await self._poll_addon(src)
-            await asyncio.sleep(1)
+            # Periodic status log (controlled by log_interval_minutes)
+            now = datetime.now().timestamp()
+            if now - self._last_status_log >= self.config.log_interval_minutes * 60:
+                self._last_status_log = now
+                stats = self.detector.stats()
+                log.info(
+                    "Status: %d attempts, %d bans, %d tracked IPs, %d sources",
+                    stats["total_attempts"], stats["total_bans"],
+                    stats["tracked_ips"], len(self.source_mgr.get_enabled()),
+                )
+            await asyncio.sleep(self.config.scan_interval_seconds)
 
     def _calc_initial_pos(self, path: str, stat_result) -> int:
         """Calculate where to start reading a file on first scan.
@@ -1513,7 +1607,7 @@ class LogScanner:
             if inode != state["inode"] or size < state["pos"]:
                 state["inode"] = inode
                 state["pos"] = 0
-                log.info("Log rotated: %s", path)
+                log.debug("Log rotated: %s", path)
 
             if state["pos"] >= size:
                 return
@@ -1686,6 +1780,22 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "not found"}, status=404)
 
+    async def handle_get_my_ip(req):
+        ip = state.my_ip
+        return web.json_response({"ip": ip, "enabled": ip is not None})
+
+    async def handle_post_my_ip(req):
+        d = await req.json()
+        ip = d.get("ip", "").strip()
+        if not ip:
+            return web.json_response({"ok": False, "error": "empty ip"}, status=400)
+        state.my_ip = ip
+        return web.json_response({"ok": True})
+
+    async def handle_delete_my_ip(req):
+        state.my_ip = None
+        return web.json_response({"ok": True})
+
     async def handle_get_sources(req):
         return web.json_response(source_mgr.get_all())
 
@@ -1734,6 +1844,10 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         lines = await source_mgr.preview_source(source_id, n)
         return web.json_response({"lines": lines, "source_id": source_id})
 
+    async def handle_health_check(req):
+        result = await source_mgr.health_check()
+        return web.json_response(result)
+
     async def handle_get_alerts(req):
         return web.json_response(alerts.get_alerts())
 
@@ -1750,6 +1864,12 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.ban_duration_minutes = max(0, int(d["ban_duration_minutes"]))
         if "alert_window_hours" in d:
             config.alert_window_hours = max(1, int(d["alert_window_hours"]))
+        if "scan_interval_seconds" in d:
+            config.scan_interval_seconds = max(1, int(d["scan_interval_seconds"]))
+        if "addon_poll_interval" in d:
+            config.addon_poll_interval = max(5, int(d["addon_poll_interval"]))
+        if "log_interval_minutes" in d:
+            config.log_interval_minutes = max(1, int(d["log_interval_minutes"]))
         if "trusted_domains" in d:
             config.trusted_domains = [s.strip() for s in d["trusted_domains"] if s.strip()]
         config.save()
@@ -1918,6 +2038,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/whitelist", handle_post_whitelist)
     app.router.add_delete("/api/whitelist/{entry}", handle_delete_whitelist)
     app.router.add_post("/api/whitelist/delete", handle_delete_whitelist)
+    app.router.add_get("/api/my-ip", handle_get_my_ip)
+    app.router.add_post("/api/my-ip", handle_post_my_ip)
+    app.router.add_delete("/api/my-ip", handle_delete_my_ip)
     app.router.add_get("/api/sources", handle_get_sources)
     app.router.add_post("/api/sources/toggle", handle_toggle_source)
     app.router.add_post("/api/sources/discover", handle_discover_sources)
@@ -1926,6 +2049,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_get("/api/addons", handle_get_addons)
     app.router.add_post("/api/addons/toggle", handle_toggle_addon)
     app.router.add_post("/api/addons/preview", handle_preview_addon)
+    app.router.add_post("/api/addons/health", handle_health_check)
     app.router.add_get("/api/unmatched", handle_unmatched)
     app.router.add_get("/api/find", handle_find_file)
     app.router.add_get("/api/alerts", handle_get_alerts)
