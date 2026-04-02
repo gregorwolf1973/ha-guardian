@@ -790,12 +790,25 @@ async function showIpEvents(ip) {
     const events = await api('GET', 'api/events/' + encodeURIComponent(ip));
     const tb = document.getElementById('ipEventsTable');
     if (!events.length) { tb.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">No events recorded for this IP</td></tr>'; return; }
-    tb.innerHTML = events.map(e => `<tr>
-      <td class="countdown">${relTime(e.time)}</td>
-      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
-      <td style="font-size:11px;font-family:monospace">${esc(e.pattern || '–')}</td>
-      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || '–')}</code></td>
-    </tr>`).join('');
+    // Group by source_name, preserving time order within each group
+    const bySource = {};
+    events.forEach(e => {
+      const k = e.source_name || '–';
+      if (!bySource[k]) bySource[k] = [];
+      bySource[k].push(e);
+    });
+    let html = '';
+    Object.entries(bySource).forEach(([src, evs]) => {
+      html += `<tr><td colspan="4" style="background:var(--surface-alt,#1e1e2e);padding:4px 8px;font-size:11px;font-weight:600;color:var(--primary)">${esc(src)}</td></tr>`;
+      evs.forEach(e => {
+        html += `<tr>
+          <td class="countdown" style="padding-left:16px">${relTime(e.time)}</td>
+          <td style="font-size:11px;font-family:monospace;color:var(--text-muted)">${esc(e.pattern || '–')}</td>
+          <td colspan="2"><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap">${esc(e.line || '–')}</code></td>
+        </tr>`;
+      });
+    });
+    tb.innerHTML = html;
   } catch (e) { document.getElementById('ipEventsTable').innerHTML = '<tr><td colspan="4" style="color:var(--danger)">' + esc(e.message) + '</td></tr>'; }
 }
 function closeIpEvents() { document.getElementById('ipEventsModal').style.display = 'none'; }

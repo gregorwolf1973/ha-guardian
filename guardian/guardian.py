@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.21.3"
+VERSION = "1.21.4"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -2713,7 +2713,8 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     # Optional direct-access port for debugging (accessible without ingress)
-    debug_port = int(os.environ.get("GUARDIAN_DEBUG_PORT", 8099))
+    # Defaults to PORT+1 so it stays consistent when ingress_port is changed.
+    debug_port = int(os.environ.get("GUARDIAN_DEBUG_PORT", PORT + 1))
     try:
         site2 = web.TCPSite(runner, "0.0.0.0", debug_port)
         await site2.start()
