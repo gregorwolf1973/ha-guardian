@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.1"
+VERSION = "1.18.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -686,6 +686,40 @@ def _extract_addon_slug_from_path(path: str) -> Optional[str]:
     return None
 
 
+# Map well-known log filenames to addon slugs (for logs outside /addon_configs/).
+# Keys are lowercase filename stems, values are partial slug matches.
+_FILENAME_TO_ADDON_HINT = {
+    "npm": "nginxproxymanager",
+    "2fauth": "2fauth",
+    "nextcloud": "nextcloud",
+    "vaultwarden": "bitwarden",
+    "heimdall": "heimdall",
+    "dokuwiki": "dokuwiki",
+}
+
+
+def _guess_addon_slug(path: str, known_slugs: list) -> Optional[str]:
+    """Try to match a log file to an addon by filename heuristics.
+    known_slugs: list of all discovered addon slugs.
+    """
+    stem = Path(path).stem.lower()
+    # Direct match in hint table
+    for key, hint in _FILENAME_TO_ADDON_HINT.items():
+        if key in stem:
+            for slug in known_slugs:
+                if hint in slug.lower():
+                    return slug
+    # Also try matching parent directory names
+    for part in Path(path).parts:
+        part_lower = part.lower()
+        for key, hint in _FILENAME_TO_ADDON_HINT.items():
+            if key in part_lower:
+                for slug in known_slugs:
+                    if hint in slug.lower():
+                        return slug
+    return None
+
+
 def _friendly_name(path: str, addon_names: dict = None) -> str:
     """Generate a human-readable name from a log file path.
 
@@ -835,6 +869,29 @@ class SourceManager:
             del self._sources[sid]
             log.debug("Removed stale/duplicate source: %s", name)
 
+        # Disable orphaned file sources: enabled but no addon association,
+        # not the HA core log, and not a custom source. These were likely
+        # auto-enabled in a previous version and should only be active if
+        # their addon is enabled.
+        for sid, s in self._sources.items():
+            if s["type"] != "file" or not s.get("enabled"):
+                continue
+            if s.get("custom"):
+                continue
+            if s.get("path") == self.config.log_file:
+                continue
+            slug = s.get("addon_slug") or _extract_addon_slug_from_path(s.get("path", ""))
+            if not slug:
+                slug = _guess_addon_slug(s.get("path", ""), list(addon_map.keys()))
+                if slug:
+                    s["addon_slug"] = slug
+            if slug:
+                # Has an addon — keep its enabled state
+                continue
+            # Orphaned: no addon, not core, not custom → disable
+            s["enabled"] = False
+            log.debug("Disabled orphaned source: %s", s.get("name", sid))
+
         # 1) Scan all mapped directories for recent log files (recursive)
         for base_dir in LOG_SCAN_DIRS:
             for entry in _scan_directory_for_logs(base_dir):
@@ -849,6 +906,8 @@ class SourceManager:
                     self._sources[sid]["size"] = size
                     # Update addon_slug and name if addon_map has better info
                     slug = _extract_addon_slug_from_path(path)
+                    if not slug:
+                        slug = _guess_addon_slug(path, list(addon_map.keys()))
                     if slug:
                         self._sources[sid]["addon_slug"] = slug
                         if slug in addon_map:
@@ -858,6 +917,8 @@ class SourceManager:
                 name = _friendly_name(path, addon_map)
                 # Auto-enable if it's the HA core log or belongs to an already-enabled addon
                 slug = _extract_addon_slug_from_path(path)
+                if not slug:
+                    slug = _guess_addon_slug(path, list(addon_map.keys()))
                 enabled = (path == self.config.log_file)
                 if not enabled and slug:
                     enabled = self._is_addon_enabled(slug)
