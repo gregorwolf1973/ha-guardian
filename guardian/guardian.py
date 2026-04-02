@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.9"
+VERSION = "1.19.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1708,6 +1708,7 @@ class Detector:
             "tracked_ips": len(self._windows),
             "uptime_seconds": uptime,
             "version": VERSION,
+            "iptables_available": self.bans._iptables_available,
         }
 
     def events(self) -> list:
@@ -2140,6 +2141,116 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     async def handle_health(req):
         return web.json_response({"status": "ok", "version": VERSION})
 
+    # --- System status: protected mode + iptables ---
+    async def handle_get_system(req):
+        """Return system-level info: protected mode, iptables availability."""
+        protected = None  # unknown
+        token = source_mgr.get_supervisor_token()
+        slug = os.environ.get("HOSTNAME", "")
+        # Try to determine our own addon slug
+        addon_slug = None
+        if token:
+            try:
+                async with aiohttp_client.ClientSession() as session:
+                    headers = {"Authorization": f"Bearer {token}"}
+                    # /addons/self/info works for the current addon
+                    async with session.get(
+                        f"{SUPERVISOR_URL}/addons/self/info",
+                        headers=headers,
+                        timeout=aiohttp_client.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            info = data.get("data", {})
+                            protected = info.get("protected", None)
+                            addon_slug = info.get("slug", slug)
+            except Exception as e:
+                log.debug("Could not fetch addon self info: %s", e)
+        return web.json_response({
+            "protected_mode": protected,
+            "iptables_available": bans._iptables_available,
+            "addon_slug": addon_slug,
+            "host_network": True,  # declared in config.yaml
+        })
+
+    async def handle_set_protection(req):
+        """Toggle protected mode for this addon via Supervisor API."""
+        try:
+            d = await req.json()
+            enable = d.get("protected", True)
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        token = source_mgr.get_supervisor_token()
+        if not token:
+            return web.json_response(
+                {"ok": False, "error": "No Supervisor token available"},
+                status=500,
+            )
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                }
+                async with session.post(
+                    f"{SUPERVISOR_URL}/addons/self/security",
+                    headers=headers,
+                    json={"protected": enable},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        if result.get("result") == "ok":
+                            # Re-check iptables availability after toggling
+                            bans._iptables_available = bans._check_iptables()
+                            if bans._iptables_available:
+                                bans.restore_iptables()
+                            log.info(
+                                "Protected mode %s — iptables %s",
+                                "enabled" if enable else "disabled",
+                                "available" if bans._iptables_available else "NOT available",
+                            )
+                            return web.json_response({
+                                "ok": True,
+                                "protected": enable,
+                                "iptables_available": bans._iptables_available,
+                                "restart_required": True,
+                            })
+                        err_msg = result.get("message", "unknown error")
+                        return web.json_response(
+                            {"ok": False, "error": err_msg}, status=500
+                        )
+                    body = await resp.text()
+                    return web.json_response(
+                        {"ok": False, "error": f"Supervisor returned {resp.status}: {body}"},
+                        status=resp.status,
+                    )
+        except Exception as e:
+            log.warning("Failed to set protected mode: %s", e)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def handle_restart_addon(req):
+        """Restart this addon via Supervisor API (needed after changing protected mode)."""
+        token = source_mgr.get_supervisor_token()
+        if not token:
+            return web.json_response({"ok": False, "error": "No Supervisor token"}, status=500)
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                headers = {"Authorization": f"Bearer {token}"}
+                async with session.post(
+                    f"{SUPERVISOR_URL}/addons/self/restart",
+                    headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        return web.json_response({"ok": True})
+                    return web.json_response(
+                        {"ok": False, "error": f"Supervisor returned {resp.status}"},
+                        status=resp.status,
+                    )
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
     async def handle_debug(req):
         """Return diagnostic info about sources, scanner state, and recent events."""
         all_src = source_mgr.get_all()
@@ -2378,6 +2489,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_get("/api/config", handle_get_config)
     app.router.add_post("/api/config", handle_post_config)
     app.router.add_get("/api/health", handle_health)
+    app.router.add_get("/api/system", handle_get_system)
+    app.router.add_post("/api/system/protection", handle_set_protection)
+    app.router.add_post("/api/system/restart", handle_restart_addon)
     app.router.add_get("/api/debug", handle_debug)
     app.router.add_get("/api/bans/{ip}/evidence", handle_ban_evidence)
     app.router.add_get("/api/rules", handle_get_rules)

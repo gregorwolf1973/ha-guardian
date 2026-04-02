@@ -181,6 +181,23 @@
     #toast.show { opacity: 1; }
     #toast.ok { background: #1b3a1e; border: 1px solid var(--success); color: #a5d6a7; }
     #toast.err { background: #3a1b1b; border: 1px solid var(--danger); color: #ef9a9a; }
+
+    /* System status banner */
+    .system-banner {
+      border-radius: var(--radius); padding: 14px 18px; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .system-banner.warn {
+      background: rgba(244,67,54,.12); border: 1px solid var(--danger);
+    }
+    .system-banner.ok {
+      background: rgba(76,175,80,.12); border: 1px solid var(--success);
+    }
+    .system-banner .banner-icon { font-size: 22px; }
+    .system-banner .banner-text { flex: 1; min-width: 200px; }
+    .system-banner .banner-text h3 { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+    .system-banner .banner-text p { font-size: 12px; color: var(--text-muted); margin: 0; }
+    .system-banner .btn { flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -213,6 +230,10 @@
   <div class="stat-card success">
     <div class="value" id="sUptime">–</div>
     <div class="label">Uptime</div>
+  </div>
+  <div class="stat-card" id="sFirewallCard">
+    <div class="value" id="sFirewall" style="font-size:16px">–</div>
+    <div class="label">Firewall</div>
   </div>
 </div>
 
@@ -361,6 +382,20 @@
 
 <!-- SETTINGS -->
 <div id="tab-settings" class="tab-pane">
+  <!-- System / Firewall Status Banner -->
+  <div id="systemBanner" class="system-banner warn" style="display:none">
+    <div class="banner-icon">🔥</div>
+    <div class="banner-text">
+      <h3 id="systemBannerTitle">Firewall not active</h3>
+      <p id="systemBannerDesc">Loading system status…</p>
+    </div>
+    <button id="systemBannerBtn" class="btn btn-danger btn-sm" style="display:none" onclick="toggleProtection()">
+      Disable Protected Mode
+    </button>
+    <button id="systemRestartBtn" class="btn btn-primary btn-sm" style="display:none" onclick="restartAddon()">
+      Restart Addon
+    </button>
+  </div>
   <form onsubmit="saveSettings(event)">
     <div class="settings-grid">
       <div class="field-group">
@@ -619,6 +654,19 @@ async function loadStats() {
     document.getElementById('sTotalAttempts').textContent = s.total_attempts ?? '–';
     document.getElementById('sTotalBans').textContent = s.total_bans ?? '–';
     document.getElementById('sUptime').textContent = fmtUptime(s.uptime_seconds || 0);
+    const fwEl = document.getElementById('sFirewall');
+    const fwCard = document.getElementById('sFirewallCard');
+    if (s.iptables_available) {
+      fwEl.textContent = 'Active';
+      fwEl.style.color = 'var(--success)';
+      fwCard.classList.add('success');
+      fwCard.classList.remove('danger');
+    } else {
+      fwEl.textContent = 'Inactive';
+      fwEl.style.color = 'var(--danger)';
+      fwCard.classList.add('danger');
+      fwCard.classList.remove('success');
+    }
     document.getElementById('statusDot').style.background = 'var(--success)';
     document.getElementById('statusText').textContent = 'Running';
   } catch (e) {
@@ -918,6 +966,100 @@ async function loadSettings() {
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     document.getElementById('cfgDomains').value = (c.trusted_domains || []).join(', ');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+  // Also load system/firewall status
+  loadSystemStatus();
+}
+
+// ---- System / Firewall Status ----
+let _systemState = {};
+async function loadSystemStatus() {
+  const banner = document.getElementById('systemBanner');
+  const title = document.getElementById('systemBannerTitle');
+  const desc = document.getElementById('systemBannerDesc');
+  const btn = document.getElementById('systemBannerBtn');
+  const restartBtn = document.getElementById('systemRestartBtn');
+  try {
+    const sys = await api('GET', 'api/system');
+    _systemState = sys;
+    banner.style.display = 'flex';
+    if (sys.iptables_available) {
+      // Firewall is active
+      banner.className = 'system-banner ok';
+      title.textContent = 'Firewall active (iptables)';
+      desc.textContent = 'Banned IPs are blocked at the network level. Protected Mode: ' +
+        (sys.protected_mode === false ? 'OFF' : sys.protected_mode === true ? 'ON' : 'unknown');
+      btn.style.display = 'none';
+      restartBtn.style.display = 'none';
+    } else if (sys.protected_mode === true) {
+      // Protected mode is ON — that's why iptables doesn't work
+      banner.className = 'system-banner warn';
+      title.textContent = 'Firewall NOT active — Protected Mode is ON';
+      desc.innerHTML = 'Protected Mode prevents Guardian from using iptables to block IPs at the network level. ' +
+        'Bans are only written to <code>ip_bans.yaml</code> but <b>not enforced</b>.<br>' +
+        'Disable Protected Mode and restart the addon to enable real IP blocking.';
+      btn.textContent = 'Disable Protected Mode';
+      btn.className = 'btn btn-danger btn-sm';
+      btn.style.display = '';
+      restartBtn.style.display = 'none';
+    } else if (sys.protected_mode === false) {
+      // Protected mode is off but iptables still not available — needs restart
+      banner.className = 'system-banner warn';
+      title.textContent = 'Firewall NOT active — Restart required';
+      desc.textContent = 'Protected Mode is already disabled, but the addon needs a restart for iptables to become available.';
+      btn.style.display = 'none';
+      restartBtn.style.display = '';
+    } else {
+      // Unknown state
+      banner.className = 'system-banner warn';
+      title.textContent = 'Firewall status unknown';
+      desc.textContent = 'Could not determine Protected Mode status from Supervisor API.';
+      btn.style.display = 'none';
+      restartBtn.style.display = 'none';
+    }
+  } catch (e) {
+    banner.style.display = 'flex';
+    banner.className = 'system-banner warn';
+    title.textContent = 'Could not check firewall status';
+    desc.textContent = e.message;
+    btn.style.display = 'none';
+    restartBtn.style.display = 'none';
+  }
+}
+
+async function toggleProtection() {
+  const btn = document.getElementById('systemBannerBtn');
+  btn.disabled = true;
+  btn.textContent = 'Disabling…';
+  try {
+    const res = await api('POST', 'api/system/protection', { protected: false });
+    if (res.ok) {
+      toast('Protected Mode disabled — restart required', 'ok');
+      if (res.restart_required) {
+        document.getElementById('systemRestartBtn').style.display = '';
+      }
+      loadSystemStatus();
+    } else {
+      toast('Error: ' + (res.error || 'unknown'), 'err');
+    }
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  }
+  btn.disabled = false;
+}
+
+async function restartAddon() {
+  const btn = document.getElementById('systemRestartBtn');
+  btn.disabled = true;
+  btn.textContent = 'Restarting…';
+  try {
+    await api('POST', 'api/system/restart');
+    toast('Addon restarting… page will reload in a few seconds', 'ok');
+    setTimeout(() => location.reload(), 8000);
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = 'Restart Addon';
+  }
 }
 async function saveSettings(ev) {
   ev.preventDefault();
