@@ -474,6 +474,27 @@
   </div>
 </div>
 
+<!-- REASSIGN MODAL -->
+<div id="reassignModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closeReassign()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:480px;margin:60px auto">
+    <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <h3 style="font-size:14px">Reassign Log File</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeReassign()">✕</button>
+    </div>
+    <div style="padding:18px">
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">File: <code id="reassignFileName" style="color:var(--text)"></code></p>
+      <label style="font-size:12px;display:block;margin-bottom:6px">Assign to addon:</label>
+      <select id="reassignSelect" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px">
+        <option value="">(none — remove assignment)</option>
+      </select>
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" onclick="closeReassign()">Cancel</button>
+        <button class="btn btn-primary btn-sm" onclick="confirmReassign()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- EVIDENCE MODAL -->
 <div id="evidenceModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;padding:30px;overflow:auto" onclick="if(event.target===this)closeEvidence()">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:900px;margin:0 auto;max-height:90vh;display:flex;flex-direction:column">
@@ -802,14 +823,31 @@ async function previewSource(sourceId) {
     document.getElementById('previewContent').textContent = 'Error: ' + e.message;
   }
 }
-async function reassignSource(sourceId, fileName) {
-  const addons = window._addonsList || [];
-  const opts = addons.map(a => a.id + ' — ' + a.name);
-  const choice = prompt('Reassign "' + fileName + '" to which addon?\\n\\nAvailable addons:\\n' + opts.map((o,i) => (i+1) + '. ' + o).join('\\n') + '\\n\\nEnter addon ID (e.g. a0d7b954_nginxproxymanager) or leave empty to clear:');
-  if (choice === null) return;
+let _reassignSourceId = null;
+function reassignSource(sourceId, fileName) {
+  _reassignSourceId = sourceId;
+  document.getElementById('reassignFileName').textContent = fileName;
+  const sel = document.getElementById('reassignSelect');
+  sel.innerHTML = '<option value="">(none — remove assignment)</option>';
+  (window._addonsList || []).forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.name + '  [' + a.id + ']';
+    sel.appendChild(opt);
+  });
+  document.getElementById('reassignModal').style.display = 'block';
+}
+function closeReassign() {
+  document.getElementById('reassignModal').style.display = 'none';
+  _reassignSourceId = null;
+}
+async function confirmReassign() {
+  if (!_reassignSourceId) return;
+  const addonId = document.getElementById('reassignSelect').value.trim();
   try {
-    await api('POST', 'api/sources/reassign', { source_id: sourceId, addon_id: choice.trim() });
-    toast(choice.trim() ? 'Reassigned to ' + choice.trim() : 'Assignment cleared', 'ok');
+    await api('POST', 'api/sources/reassign', { source_id: _reassignSourceId, addon_id: addonId });
+    toast(addonId ? 'Reassigned to ' + addonId : 'Assignment cleared', 'ok');
+    closeReassign();
     loadSources();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
