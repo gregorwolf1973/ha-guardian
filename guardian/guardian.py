@@ -706,6 +706,14 @@ def _guess_addon_slug(path: str, known_slugs: list) -> Optional[str]:
     """Try to match a log file to an addon by filename heuristics.
     known_slugs: list of all discovered addon slugs.
     """
+    # Files inside a crowdsec directory belong to the Crowdsec addon,
+    # NOT to whatever the filename might suggest (e.g. npm.log, 2fauth.log).
+    parts_lower = [p.lower() for p in Path(path).parts]
+    if "crowdsec" in parts_lower:
+        for slug in known_slugs:
+            if "crowdsec" in slug.lower() and "bouncer" not in slug.lower() and "dashboard" not in slug.lower():
+                return slug
+
     stem = Path(path).stem.lower()
     # Direct match in hint table
     for key, hint in _FILENAME_TO_ADDON_HINT.items():
