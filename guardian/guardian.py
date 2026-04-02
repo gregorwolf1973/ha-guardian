@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.2"
+VERSION = "1.18.3"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -61,6 +61,10 @@ MAX_LOG_AGE_HOURS = 48
 
 # Skip rotated log files (e.g. .log.1, .log.2, .log.gz)
 ROTATED_LOG_RE = re.compile(r"\.log\.\d+$|\.log\.gz$|\.log\.bz2$|\.log\.xz$|\.log\.old$")
+
+# Max file size for initial scan (bytes). Files larger than this are still tailed
+# for new lines, but the initial catch-up read is capped at this size from the end.
+MAX_INITIAL_READ_BYTES = 5 * 1024 * 1024  # 5 MB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1130,6 +1134,7 @@ class SourceManager:
     def toggle_addon(self, addon_id: str, enabled: bool) -> bool:
         """Toggle all sources belonging to an addon on or off."""
         found = False
+        toggled = []
         for src in self._sources.values():
             src_addon = None
             if src["type"] == "addon":
@@ -1145,9 +1150,16 @@ class SourceManager:
                     src_addon = extracted if extracted else (src["id"] if src.get("custom") else None)
             if src_addon == addon_id:
                 src["enabled"] = enabled
+                toggled.append(src["id"])
                 found = True
         if found:
             self._save()
+            log.info("Toggled addon %s → %s (%d sources: %s)",
+                     addon_id, "ON" if enabled else "OFF", len(toggled),
+                     ", ".join(toggled[:5]))
+        else:
+            log.warning("Toggle failed: addon_id=%s not found in %d sources",
+                        addon_id, len(self._sources))
         return found
 
     def add_custom_source(self, path: str) -> tuple:
@@ -1668,8 +1680,14 @@ class LogScanner:
                 first_read = True
 
             if inode != state["inode"] or size < state["pos"]:
+                # File rotated or truncated — re-read from calculated position
+                new_pos = self._calc_initial_pos(path, stat)
                 state["inode"] = inode
-                state["pos"] = 0
+                state["pos"] = new_pos
+                first_read = True
+                if size > MAX_INITIAL_READ_BYTES:
+                    log.info("Large rotated file %s (%d MB), reading last %d MB",
+                             path, size // (1024*1024), MAX_INITIAL_READ_BYTES // (1024*1024))
                 log.debug("Log rotated: %s", path)
 
             if state["pos"] >= size:
@@ -1950,9 +1968,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         enabled = [s for s in all_src if s.get("enabled")]
         disabled_with_slug = [
             {"id": s["id"], "name": s.get("name", "?"), "type": s["type"],
-             "path": s.get("path", ""), "addon_slug": s.get("addon_slug", ""),
+             "path": s.get("path", ""), "addon_slug": s.get("addon_slug", s.get("slug", "")),
              "enabled": False}
-            for s in all_src if not s.get("enabled") and s.get("addon_slug")
+            for s in all_src if not s.get("enabled") and (s.get("addon_slug") or s.get("slug"))
         ]
         scanner_state = {}
         if scanner:
