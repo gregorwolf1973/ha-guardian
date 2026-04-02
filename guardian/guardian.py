@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.6"
+VERSION = "1.18.7"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1647,13 +1647,16 @@ class Detector:
                       ip, source_name, pattern)
             return
         now = datetime.now(timezone.utc)
-        # Use the timestamp from the log line if available, otherwise now
+        # Use the timestamp from the log line for display only.
+        # For the sliding window (ban counting), always use now — otherwise
+        # historical log_times (e.g. 10:39) would be older than the cutoff
+        # (now - window_minutes) and get immediately removed, keeping count at 1.
         event_time = log_time if log_time else now
         cutoff = now - timedelta(minutes=self.config.window_minutes)
         dq = self._windows[ip]
         while dq and dq[0] < cutoff:
             dq.popleft()
-        dq.append(event_time)
+        dq.append(now)  # always use now for window counting, not log_time
         self._total_attempts += 1
         self.alerts.record(source_id, source_name, ip)
         banned_now = False
