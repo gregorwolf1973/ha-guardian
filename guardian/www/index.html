@@ -620,13 +620,13 @@ const TABS = ['dashboard','bans','sources','whitelist','settings','rules'];
 let activeTab = 'dashboard';
 
 // ---- Loading Spinner ----
-function showLoading(tabId) {
+function showLoading(tabId, message = 'Loading…') {
   const pane = document.getElementById('tab-' + tabId);
   if (!pane) return;
   if (pane.querySelector('.loading-overlay')) return;
   const ov = document.createElement('div');
   ov.className = 'loading-overlay';
-  ov.innerHTML = '<div class="spinner"></div>';
+  ov.innerHTML = '<div style="text-align:center"><div class="spinner" style="margin:0 auto;margin-bottom:12px"></div><div style="font-size:12px;color:var(--text-muted)">' + esc(message) + '</div></div>';
   pane.appendChild(ov);
 }
 function hideLoading(tabId) {
@@ -634,6 +634,9 @@ function hideLoading(tabId) {
   if (!pane) return;
   const ov = pane.querySelector('.loading-overlay');
   if (ov) ov.remove();
+}
+function hideLoadingTimeout(tabId, ms = 2000) {
+  setTimeout(() => hideLoading(tabId), ms);
 }
 
 // ---- Tabs ----
@@ -730,7 +733,7 @@ async function loadStats() {
 
 // ---- Dashboard ----
 async function loadDashboard() {
-  showLoading('dashboard');
+  showLoading('dashboard', 'Checking log files…');
   await loadStats();
   try {
     const rawEvents = await api('GET', 'api/events');
@@ -789,7 +792,7 @@ function closeIpEvents() { document.getElementById('ipEventsModal').style.displa
 
 // ---- Bans ----
 async function loadBans() {
-  showLoading('bans');
+  showLoading('bans', 'Loading blocked IPs…');
   await loadStats();
   try {
     const bans = await api('GET', 'api/bans');
@@ -827,7 +830,7 @@ async function unbanIP(ip) {
 
 // ---- Addons ----
 async function loadSources() {
-  showLoading('sources');
+  showLoading('sources', 'Loading addons…');
   try {
     const addons = await api('GET', 'api/addons');
     const tb = document.getElementById('sourcesTable');
@@ -912,12 +915,12 @@ async function addCustomSource() {
   } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 async function discoverSources() {
-  showLoading('sources');
+  showLoading('sources', 'Discovering log sources…');
   try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(); }
   catch (e) { toast(e.message, 'err'); hideLoading('sources'); }
 }
 async function healthCheck() {
-  showLoading('sources');
+  showLoading('sources', 'Running health check…');
   try {
     const result = await api('POST', 'api/addons/health');
     let okCount = 0, staleCount = 0, emptyCount = 0;
@@ -1083,6 +1086,7 @@ async function loadSystemStatus() {
   try {
     const sys = await api('GET', 'api/system');
     _systemState = sys;
+    if (!banner) return;  // Not on settings tab
     banner.style.display = 'flex';
     if (sys.iptables_available) {
       // Firewall is active
@@ -1131,20 +1135,23 @@ async function loadSystemStatus() {
 async function toggleProtection() {
   const btn = document.getElementById('systemBannerBtn');
   btn.disabled = true;
-  btn.textContent = 'Disabling…';
+  btn.textContent = 'Disabling Protected Mode…';
+  showLoading('settings', 'Updating system settings…');
   try {
     const res = await api('POST', 'api/system/protection', { protected: false });
     if (res.ok) {
-      toast('Protected Mode disabled — restart required', 'ok');
-      if (res.restart_required) {
-        document.getElementById('systemRestartBtn').style.display = '';
-      }
-      loadSystemStatus();
+      toast('Protected Mode disabled — showing restart button', 'ok');
+      // Reload system status to show new state
+      await new Promise(r => setTimeout(r, 1500));
+      await loadSystemStatus();
+      hideLoading('settings');
     } else {
       toast('Error: ' + (res.error || 'unknown'), 'err');
+      hideLoading('settings');
     }
   } catch (e) {
     toast('Error: ' + e.message, 'err');
+    hideLoading('settings');
   }
   btn.disabled = false;
 }
@@ -1154,9 +1161,12 @@ async function restartAddon() {
   btn.disabled = true;
   btn.textContent = 'Restarting…';
   try {
-    await api('POST', 'api/system/restart');
-    toast('Addon restarting… page will reload in a few seconds', 'ok');
-    setTimeout(() => location.reload(), 8000);
+    // Don't wait for response — addon is restarting so connection will break
+    api('POST', 'api/system/restart').catch(() => {});
+    toast('Addon restarting… please wait…', 'ok');
+    // Reload after 10 seconds (addon startup time)
+    hideLoading('settings');
+    setTimeout(() => location.reload(), 10000);
   } catch (e) {
     toast('Error: ' + e.message, 'err');
     btn.disabled = false;

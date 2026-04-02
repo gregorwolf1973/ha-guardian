@@ -1,7 +1,7 @@
 name: "HA Guardian"
-version: "1.20.0"
+version: "1.20.1"
 slug: "ha_guardian"
-description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs"
+description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs at network level via iptables (requires Protected Mode OFF)"
 url: "https://github.com/gregorwolf1973/ha-guardian"
 arch:
   - amd64
