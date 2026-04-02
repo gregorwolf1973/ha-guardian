@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.21.0"
+VERSION = "1.21.1"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1388,22 +1388,23 @@ class BanManager:
                     log.info("Firewall backend: %s — enforcement active", binary)
                     return binary, False
                 err = r.stderr.decode(errors="replace").strip()
-                log.debug("Firewall candidate %s failed (rc=%d): %s", binary, r.returncode, err)
+                log.warning("Firewall candidate %s failed (rc=%d): %s", binary, r.returncode, err)
             except FileNotFoundError:
-                log.debug("Firewall candidate %s not found in PATH", binary)
+                log.warning("Firewall candidate %s: not found in PATH", binary)
             except Exception as e:
-                log.debug("Firewall candidate %s error: %s", binary, e)
+                log.warning("Firewall candidate %s: %s", binary, e)
         # Fall back to native nftables
         try:
             r = subprocess.run(["nft", "list", "tables"], capture_output=True, timeout=3)
             if r.returncode == 0:
                 log.info("Firewall backend: nft (nftables) — enforcement active")
                 return None, True
-            log.debug("nft check failed (rc=%d)", r.returncode)
+            err = r.stderr.decode(errors="replace").strip()
+            log.warning("Firewall candidate nft failed (rc=%d): %s", r.returncode, err)
         except FileNotFoundError:
-            log.debug("nft not found in PATH")
+            log.warning("Firewall candidate nft: not found in PATH")
         except Exception as e:
-            log.debug("nft check error: %s", e)
+            log.warning("Firewall candidate nft: %s", e)
         log.warning("No working firewall backend found — firewall enforcement disabled")
         return None, False
 
