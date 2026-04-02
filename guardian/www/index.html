@@ -742,7 +742,16 @@ async function loadDashboard(showSpinner = false) {
     const skipped = [];
     rawEvents.forEach(e => {
       if (e.skipped) { skipped.push(e); return; }
-      if (!byIp[e.ip] || e.count > byIp[e.ip].count) byIp[e.ip] = e;
+      if (!byIp[e.ip]) {
+        byIp[e.ip] = { ...e, _sources: new Set([e.source_name]), _patterns: new Set([e.pattern]) };
+      } else {
+        byIp[e.ip]._sources.add(e.source_name);
+        byIp[e.ip]._patterns.add(e.pattern);
+        if (e.count > byIp[e.ip].count) {
+          const saved = { _sources: byIp[e.ip]._sources, _patterns: byIp[e.ip]._patterns };
+          byIp[e.ip] = { ...e, ...saved };
+        }
+      }
     });
     const skipByIp = {};
     skipped.forEach(e => { if (!skipByIp[e.ip]) skipByIp[e.ip] = e; });
@@ -754,10 +763,14 @@ async function loadDashboard(showSpinner = false) {
       else if (e.banned) statusBadge = '<span class="badge badge-danger">BANNED</span>';
       else statusBadge = '<span class="badge badge-warn">Attempt</span>';
       const detailsBtn = e.skipped ? '' : '<button class="btn btn-ghost" style="padding:1px 6px;font-size:10px" onclick="showIpEvents(\'' + esc(e.ip) + '\')">Details</button>';
+      // Show all unique sources that triggered for this IP
+      const sourcesHtml = e._sources
+        ? [...e._sources].map(s => `<div style="font-size:11px">${esc(s)}</div>`).join('')
+        : esc(e.source_name || '–');
       return `<tr${e.skipped ? ' style="opacity:0.6"' : ''}>
       <td class="countdown">${relTime(e.time)}</td>
       <td class="mono">${esc(e.ip)}${e.skipped ? ' <span style="font-size:9px;color:var(--primary)">(My IP / WL)</span>' : ''}</td>
-      <td style="font-size:12px">${esc(e.source_name || '–')}</td>
+      <td style="font-size:12px">${sourcesHtml}</td>
       <td>${e.count}</td>
       <td>${statusBadge}</td>
       <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap;max-width:300px;display:inline-block;overflow:hidden;text-overflow:ellipsis">${esc(e.line || e.url || '–')}</code></td>
