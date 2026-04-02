@@ -26,7 +26,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.18.3"
+VERSION = "1.18.5"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1542,10 +1542,16 @@ class Detector:
         self._events: deque = deque(maxlen=500)
         self._total_attempts = 0
         self._total_bans = 0
+        self._whitelisted_skips = 0
+        self._last_whitelisted_ip = ""
         self._started = datetime.now(timezone.utc)
 
     async def record(self, ip, source_id, source_name, url="", pattern="", line=""):
         if self.config.is_whitelisted(ip):
+            self._whitelisted_skips += 1
+            self._last_whitelisted_ip = ip
+            log.debug("Skipped whitelisted IP %s (source=%s, pattern=%s)",
+                      ip, source_name, pattern)
             return
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(minutes=self.config.window_minutes)
@@ -2031,6 +2037,12 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             ],
             "disabled_addon_sources": disabled_with_slug[:30],
             "scanner": scanner_state,
+            "whitelist": {
+                "my_ip": config._state.my_ip,
+                "whitelist_entries": config.whitelist,
+                "whitelisted_skips": detector._whitelisted_skips,
+                "last_whitelisted_ip": detector._last_whitelisted_ip,
+            },
             "recent_events": list(detector._events)[:20],
             "recent_unmatched": list(scanner.unmatched_lines)[:20] if scanner else [],
         })
