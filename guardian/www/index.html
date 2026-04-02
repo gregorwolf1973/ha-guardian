@@ -647,13 +647,13 @@ document.getElementById('tabBar').addEventListener('click', e => {
   activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
-  refreshTab(tab);
+  refreshTab(tab, true);  // show spinner on manual tab switch
 });
 
-function refreshTab(tab) {
-  if (tab === 'dashboard') loadDashboard();
-  else if (tab === 'bans') loadBans();
-  else if (tab === 'sources') loadSources();
+function refreshTab(tab, showSpinner = false) {
+  if (tab === 'dashboard') loadDashboard(showSpinner);
+  else if (tab === 'bans') loadBans(showSpinner);
+  else if (tab === 'sources') loadSources(showSpinner);
   else if (tab === 'whitelist') loadWhitelist();
   else if (tab === 'settings') loadSettings();
   else if (tab === 'rules') loadRules();
@@ -732,15 +732,13 @@ async function loadStats() {
 }
 
 // ---- Dashboard ----
-async function loadDashboard() {
-  showLoading('dashboard', 'Checking log files…');
-  await loadStats();
+async function loadDashboard(showSpinner = false) {
+  if (showSpinner) showLoading('dashboard', 'Checking log files…');
   try {
+    await loadStats();
     const rawEvents = await api('GET', 'api/events');
     const tb = document.getElementById('eventsTable');
     if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No events yet</td></tr>'; return; }
-    // Deduplicate: keep only the latest event per IP (highest count).
-    // Skipped (whitelisted) events are shown separately.
     const byIp = {};
     const skipped = [];
     rawEvents.forEach(e => {
@@ -767,8 +765,8 @@ async function loadDashboard() {
       <td>${detailsBtn}</td>
     </tr>`;
     }).join('');
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-  hideLoading('dashboard');
+  } catch (e) { toast('Error loading dashboard: ' + e.message, 'err'); }
+  finally { hideLoading('dashboard'); }
 }
 
 // ---- IP Events Detail ----
@@ -791,10 +789,10 @@ async function showIpEvents(ip) {
 function closeIpEvents() { document.getElementById('ipEventsModal').style.display = 'none'; }
 
 // ---- Bans ----
-async function loadBans() {
-  showLoading('bans', 'Loading blocked IPs…');
-  await loadStats();
+async function loadBans(showSpinner = false) {
+  if (showSpinner) showLoading('bans', 'Loading blocked IPs…');
   try {
+    await loadStats();
     const bans = await api('GET', 'api/bans');
     const tb = document.getElementById('bansTable');
     if (!bans.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="8">No blocked IPs</td></tr>'; return; }
@@ -809,8 +807,8 @@ async function loadBans() {
       <td><button class="btn btn-ghost btn-sm" onclick="showEvidence('${esc(b.ip)}')">Details</button></td>
       <td><button class="btn btn-ghost btn-sm" onclick="unbanIP('${esc(b.ip)}')">Unban</button></td>
     </tr>`).join('');
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-  hideLoading('bans');
+  } catch (e) { toast('Error loading bans: ' + e.message, 'err'); }
+  finally { hideLoading('bans'); }
 }
 async function addBan() {
   const ip = document.getElementById('banIp').value.trim();
@@ -829,8 +827,8 @@ async function unbanIP(ip) {
 }
 
 // ---- Addons ----
-async function loadSources() {
-  showLoading('sources', 'Loading addons…');
+async function loadSources(showSpinner = false) {
+  if (showSpinner) showLoading('sources', 'Loading addons…');
   try {
     const addons = await api('GET', 'api/addons');
     const tb = document.getElementById('sourcesTable');
@@ -897,8 +895,8 @@ async function loadSources() {
       }
     });
     tb.innerHTML = rows.join('');
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-  hideLoading('sources');
+  } catch (e) { toast('Error loading addons: ' + e.message, 'err'); }
+  finally { hideLoading('sources'); }
 }
 async function toggleAddon(id, enabled) {
   try { await api('POST', 'api/addons/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' monitoring', 'ok'); }
@@ -916,8 +914,9 @@ async function addCustomSource() {
 }
 async function discoverSources() {
   showLoading('sources', 'Discovering log sources…');
-  try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(); }
-  catch (e) { toast(e.message, 'err'); hideLoading('sources'); }
+  try { await api('POST', 'api/sources/discover'); toast('Discovery complete', 'ok'); loadSources(true); }
+  catch (e) { toast(e.message, 'err'); }
+  finally { hideLoading('sources'); }
 }
 async function healthCheck() {
   showLoading('sources', 'Running health check…');
@@ -1494,9 +1493,9 @@ async function generateRegex() {
 }
 
 // ---- Init & Auto-Refresh ----
-loadStats(); loadDashboard();
+loadDashboard(true);  // show spinner on first load
 autoUpdateMyIp();
-// Auto-refresh: dashboard/bans every 10s, other tabs every 30s
+// Auto-refresh silently (no spinner) in background
 let _lastRefresh = 0;
 setInterval(() => {
   const now = Date.now();
@@ -1504,7 +1503,7 @@ setInterval(() => {
   const interval = fast ? 10000 : 30000;
   if (now - _lastRefresh >= interval) {
     _lastRefresh = now;
-    refreshTab(activeTab);
+    refreshTab(activeTab, false);  // silent refresh, no spinner
   }
 }, 5000);
 </script>

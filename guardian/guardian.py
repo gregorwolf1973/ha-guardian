@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.20.3"
+VERSION = "1.20.4"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1375,8 +1375,20 @@ class BanManager:
                 ["iptables", "-L", "INPUT", "-n"],
                 capture_output=True, timeout=3
             )
-            return r.returncode == 0
-        except Exception:
+            if r.returncode == 0:
+                log.info("iptables available — firewall enforcement active")
+                return True
+            err = r.stderr.decode(errors="replace").strip()
+            log.warning("iptables check failed (rc=%d): %s", r.returncode, err)
+            return False
+        except FileNotFoundError:
+            log.warning("iptables not found in PATH — install iptables package")
+            return False
+        except PermissionError as e:
+            log.warning("iptables permission denied — Protected Mode may be ON: %s", e)
+            return False
+        except Exception as e:
+            log.warning("iptables check failed: %s", e)
             return False
 
     def _ensure_chain(self):
