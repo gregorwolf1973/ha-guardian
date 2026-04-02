@@ -1781,7 +1781,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         return web.json_response({"ok": False, "error": "not found"}, status=404)
 
     async def handle_get_my_ip(req):
-        ip = state.my_ip
+        ip = config._state.my_ip
         return web.json_response({"ip": ip, "enabled": ip is not None})
 
     async def handle_post_my_ip(req):
@@ -1789,11 +1789,11 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         ip = d.get("ip", "").strip()
         if not ip:
             return web.json_response({"ok": False, "error": "empty ip"}, status=400)
-        state.my_ip = ip
+        config._state.my_ip = ip
         return web.json_response({"ok": True})
 
     async def handle_delete_my_ip(req):
-        state.my_ip = None
+        config._state.my_ip = None
         return web.json_response({"ok": True})
 
     async def handle_get_sources(req):
