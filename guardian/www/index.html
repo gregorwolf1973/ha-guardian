@@ -481,9 +481,14 @@
             <div class="hint">URL of the CrowdSec Local API (usually the CrowdSec addon container hostname).</div>
           </div>
           <div class="form-row">
-            <label>Bouncer API Key</label>
-            <input id="cfgCrowdsecKey" type="password" placeholder="your-bouncer-api-key">
-            <div class="hint">Generate with: <code>cscli bouncers add ha-guardian</code> in the CrowdSec addon.</div>
+            <label>Machine ID</label>
+            <input id="cfgCrowdsecMachineId" type="text" placeholder="ha-guardian">
+            <div class="hint">Register with: <code>cscli machines add ha-guardian --password YOUR_PASS</code></div>
+          </div>
+          <div class="form-row">
+            <label>Machine Password</label>
+            <input id="cfgCrowdsecKey" type="password" placeholder="machine password">
+            <div class="hint">The password set when registering the machine. Guardian logs in as a machine to submit decisions.</div>
           </div>
           <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
             <button type="button" class="btn btn-ghost btn-sm" onclick="testCrowdsec()">Test Connection</button>
@@ -963,7 +968,7 @@ async function deleteSource(id, name, hasFile) {
   const msg = 'Remove source "' + name + '" from Guardian?' + fileMsg + '\n\nThis cannot be undone.';
   if (!confirm(msg)) return;
   try {
-    await api('DELETE', 'api/sources/' + encodeURIComponent(id) + (hasFile ? '?delete_file=true' : ''));
+    await api('POST', 'api/sources/delete', { id, delete_file: hasFile });
     toast('Source removed: ' + name, 'ok');
     loadSources();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -1137,6 +1142,7 @@ async function loadSettings() {
     _renderDomainChips(c.trusted_domains || []);
     document.getElementById('cfgCrowdsecEnabled').checked = !!c.crowdsec_enabled;
     document.getElementById('cfgCrowdsecUrl').value = c.crowdsec_lapi_url || '';
+    document.getElementById('cfgCrowdsecMachineId').value = c.crowdsec_machine_id || '';
     document.getElementById('cfgCrowdsecKey').value = c.crowdsec_lapi_key || '';
     toggleCrowdsecFields();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -1241,6 +1247,7 @@ async function saveSettings(ev) {
       trusted_domains: _getCurrentDomains(),
       crowdsec_enabled: document.getElementById('cfgCrowdsecEnabled').checked,
       crowdsec_lapi_url: document.getElementById('cfgCrowdsecUrl').value.trim(),
+      crowdsec_machine_id: document.getElementById('cfgCrowdsecMachineId').value.trim(),
       crowdsec_lapi_key: document.getElementById('cfgCrowdsecKey').value.trim(),
     });
     toast('Settings saved', 'ok'); loadStats(); loadSettings();
@@ -1286,13 +1293,14 @@ function toggleCrowdsecFields() {
 }
 async function testCrowdsec() {
   const url = document.getElementById('cfgCrowdsecUrl').value.trim();
-  const key = document.getElementById('cfgCrowdsecKey').value.trim();
+  const machine_id = document.getElementById('cfgCrowdsecMachineId').value.trim();
+  const password = document.getElementById('cfgCrowdsecKey').value.trim();
   const res = document.getElementById('crowdsecTestResult');
-  if (!url || !key) { res.textContent = '⚠ Enter URL and API key first'; res.style.color = 'var(--warn)'; return; }
+  if (!url || !machine_id || !password) { res.textContent = '⚠ Enter URL, Machine ID and Password first'; res.style.color = 'var(--warn)'; return; }
   res.textContent = 'Testing…'; res.style.color = 'var(--text-muted)';
   try {
-    const data = await api('POST', 'api/crowdsec/test', { url, key });
-    if (data.ok) { res.textContent = '✓ Connected — CrowdSec LAPI reachable'; res.style.color = 'var(--success)'; }
+    const data = await api('POST', 'api/crowdsec/test', { url, machine_id, password });
+    if (data.ok) { res.textContent = '✓ Login OK — Guardian registered as machine'; res.style.color = 'var(--success)'; }
     else { res.textContent = '✗ ' + (data.error || 'Connection failed'); res.style.color = 'var(--danger)'; }
   } catch (e) { res.textContent = '✗ ' + e.message; res.style.color = 'var(--danger)'; }
 }

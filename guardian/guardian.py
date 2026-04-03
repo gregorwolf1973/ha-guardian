@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.21.5"
+VERSION = "1.21.6"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -480,7 +480,8 @@ class Config:
         self.log_file: str = LOG_FILE_DEFAULT
         self.crowdsec_enabled: bool = False
         self.crowdsec_lapi_url: str = ""
-        self.crowdsec_lapi_key: str = ""
+        self.crowdsec_machine_id: str = ""
+        self.crowdsec_lapi_key: str = ""  # machine password
         self._load()
 
     def _load(self):
@@ -531,6 +532,8 @@ class Config:
             self.crowdsec_enabled = bool(ov["crowdsec_enabled"])
         if "crowdsec_lapi_url" in ov:
             self.crowdsec_lapi_url = str(ov["crowdsec_lapi_url"])
+        if "crowdsec_machine_id" in ov:
+            self.crowdsec_machine_id = str(ov["crowdsec_machine_id"])
         if "crowdsec_lapi_key" in ov:
             self.crowdsec_lapi_key = str(ov["crowdsec_lapi_key"])
 
@@ -579,6 +582,7 @@ class Config:
         self._state.set_override("log_interval_minutes", self.log_interval_minutes)
         self._state.set_override("crowdsec_enabled", self.crowdsec_enabled)
         self._state.set_override("crowdsec_lapi_url", self.crowdsec_lapi_url)
+        self._state.set_override("crowdsec_machine_id", self.crowdsec_machine_id)
         self._state.set_override("crowdsec_lapi_key", self.crowdsec_lapi_key)
         # Whitelist and trusted_domains are auto-saved via property setters
 
@@ -596,6 +600,7 @@ class Config:
             "trusted_domains": self.trusted_domains,
             "crowdsec_enabled": self.crowdsec_enabled,
             "crowdsec_lapi_url": self.crowdsec_lapi_url,
+            "crowdsec_machine_id": self.crowdsec_machine_id,
             "crowdsec_lapi_key": self.crowdsec_lapi_key,
         }
 
@@ -1652,35 +1657,74 @@ class BanManager:
         return True
 
     async def _crowdsec_submit(self, ip: str, duration_minutes: int):
-        """Submit a ban decision to CrowdSec LAPI (non-blocking, best-effort)."""
-        dur_str = f"{duration_minutes}m"
-        payload = [{
-            "duration": dur_str,
-            "ip": ip,
-            "reason": "ha-guardian",
-            "scenario": "ha-guardian/brute-force",
-            "type": "ban",
-            "scope": "ip",
-            "value": ip,
-        }]
+        """Submit a ban alert to CrowdSec LAPI as a machine (non-blocking, best-effort).
+        Logs in with machine credentials to get a JWT, then posts an alert."""
         url = self.config.crowdsec_lapi_url.rstrip("/")
-        key = self.config.crowdsec_lapi_key
+        machine_id = self.config.crowdsec_machine_id
+        password = self.config.crowdsec_lapi_key
+        if not url or not machine_id or not password:
+            return
         try:
             async with aiohttp_client.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                # 1) Login to get JWT
+                login_resp = await session.post(
+                    f"{url}/v1/watchers/login",
+                    json={"machine_id": machine_id, "password": password},
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                )
+                if login_resp.status != 200:
+                    log.warning("CrowdSec: login failed (HTTP %d)", login_resp.status)
+                    return
+                token = (await login_resp.json()).get("token")
+                if not token:
+                    log.warning("CrowdSec: no token in login response")
+                    return
+
+                # 2) Push alert (LAPI creates a decision from the alert)
+                dur_str = f"{duration_minutes}m"
+                alert = [{
+                    "capacity": 0,
+                    "decisions": [{
+                        "duration": dur_str,
+                        "ip": ip,
+                        "reason": "ha-guardian/brute-force",
+                        "scenario": "ha-guardian/brute-force",
+                        "type": "ban",
+                        "scope": "ip",
+                        "value": ip,
+                    }],
+                    "events": [],
+                    "events_count": 1,
+                    "labels": None,
+                    "leakspeed": "0",
+                    "message": "Brute-force detected by HA Guardian",
+                    "scenario": "ha-guardian/brute-force",
+                    "scenario_hash": "",
+                    "scenario_version": "",
+                    "simulated": False,
+                    "source": {
+                        "ip": ip,
+                        "scope": "ip",
+                        "value": ip,
+                    },
+                    "start_at": datetime.now(timezone.utc).isoformat(),
+                    "stop_at": datetime.now(timezone.utc).isoformat(),
+                }]
+                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 async with session.post(
-                    f"{url}/v1/decisions",
-                    json=payload,
+                    f"{url}/v1/alerts",
+                    json=alert,
                     headers=headers,
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status in (200, 201):
-                        log.info("CrowdSec: submitted ban for %s", ip)
+                        log.info("CrowdSec: submitted alert for %s", ip)
                     else:
                         body = await resp.text()
-                        log.warning("CrowdSec: failed to submit ban for %s — HTTP %d: %s", ip, resp.status, body[:200])
+                        log.warning("CrowdSec: alert submit failed for %s — HTTP %d: %s", ip, resp.status, body[:200])
         except Exception as e:
-            log.warning("CrowdSec: could not submit ban for %s: %s", ip, e)
+            log.warning("CrowdSec: could not submit alert for %s: %s", ip, e)
 
     def get_evidence(self, ip: str) -> list:
         return self._evidence.get(ip, [])
@@ -2322,6 +2366,8 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.crowdsec_enabled = bool(d["crowdsec_enabled"])
         if "crowdsec_lapi_url" in d:
             config.crowdsec_lapi_url = str(d["crowdsec_lapi_url"]).strip()
+        if "crowdsec_machine_id" in d:
+            config.crowdsec_machine_id = str(d["crowdsec_machine_id"]).strip()
         if "crowdsec_lapi_key" in d:
             config.crowdsec_lapi_key = str(d["crowdsec_lapi_key"]).strip()
         config.save()
@@ -2718,34 +2764,57 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
 
     async def handle_delete_source(req):
-        """Remove a source from tracking; optionally delete the file."""
-        source_id = req.match_info["id"]
-        delete_file = req.rel_url.query.get("delete_file", "false").lower() == "true"
+        """Remove a source from tracking; optionally delete the file.
+        Accepts POST body {id, delete_file} to avoid URL-encoding issues with IDs
+        that contain colons/slashes (e.g. file:/path/to/file)."""
+        try:
+            d = await req.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid JSON"}, status=400)
+        source_id = d.get("id", "")
+        delete_file = bool(d.get("delete_file", False))
+        if not source_id:
+            return web.json_response({"ok": False, "error": "id required"}, status=400)
         ok = source_mgr.remove_source(source_id, delete_file=delete_file)
         if ok:
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "source not found"}, status=404)
 
+    async def _crowdsec_login(url: str, machine_id: str, password: str) -> Optional[str]:
+        """Login to CrowdSec LAPI as a machine; return JWT token or None."""
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                headers = {"Content-Type": "application/json"}
+                payload = {"machine_id": machine_id, "password": password}
+                async with session.post(
+                    f"{url}/v1/watchers/login",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("token")
+                    body = await resp.text()
+                    log.warning("CrowdSec login failed (HTTP %d): %s", resp.status, body[:200])
+                    return None
+        except Exception as e:
+            log.warning("CrowdSec login error: %s", e)
+            return None
+
     async def handle_crowdsec_test(req):
-        """Test connectivity to a CrowdSec LAPI instance."""
+        """Test CrowdSec LAPI connectivity by logging in as a machine."""
         try:
             d = await req.json()
             url = d.get("url", "").rstrip("/")
-            key = d.get("key", "")
-            if not url or not key:
-                return web.json_response({"ok": False, "error": "url and key required"}, status=400)
-            async with aiohttp_client.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                async with session.get(
-                    f"{url}/v1/watchers",
-                    headers=headers,
-                    timeout=aiohttp_client.ClientTimeout(total=5),
-                ) as resp:
-                    if resp.status in (200, 403):
-                        # 403 means auth is working but key has no watcher permissions — still reachable
-                        return web.json_response({"ok": True, "status": resp.status})
-                    body = await resp.text()
-                    return web.json_response({"ok": False, "error": f"HTTP {resp.status}: {body[:200]}"})
+            machine_id = d.get("machine_id", "").strip()
+            password = d.get("password", "").strip()
+            if not url or not machine_id or not password:
+                return web.json_response({"ok": False, "error": "url, machine_id and password required"}, status=400)
+            token = await _crowdsec_login(url, machine_id, password)
+            if token:
+                return web.json_response({"ok": True})
+            return web.json_response({"ok": False, "error": "Login failed — check machine_id and password"})
         except aiohttp_client.ClientConnectorError as e:
             return web.json_response({"ok": False, "error": f"Connection refused: {e}"})
         except Exception as e:
@@ -2770,7 +2839,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/sources/add", handle_add_custom_source)
     app.router.add_post("/api/sources/preview", handle_preview_source)
     app.router.add_post("/api/sources/reassign", handle_reassign_source)
-    app.router.add_delete("/api/sources/{id}", handle_delete_source)
+    app.router.add_post("/api/sources/delete", handle_delete_source)
     app.router.add_get("/api/addons", handle_get_addons)
     app.router.add_post("/api/addons/toggle", handle_toggle_addon)
     app.router.add_post("/api/addons/preview", handle_preview_addon)
