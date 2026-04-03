@@ -476,19 +476,14 @@
         </div>
         <div id="crowdsecFields" style="display:none">
           <div class="form-row">
-            <label>CrowdSec LAPI URL</label>
-            <input id="cfgCrowdsecUrl" type="text" placeholder="http://a0d7b954_crowdsec:8080">
-            <div class="hint">URL of the CrowdSec Local API (usually the CrowdSec addon container hostname).</div>
+            <label>CrowdSec Container Name</label>
+            <input id="cfgCrowdsecContainer" type="text" placeholder="addon_424ccef4_crowdsec">
+            <div class="hint">Find with: <code>docker ps | grep crowdsec</code></div>
           </div>
           <div class="form-row">
-            <label>Machine ID</label>
-            <input id="cfgCrowdsecMachineId" type="text" placeholder="ha-guardian">
-            <div class="hint">Register with: <code>cscli machines add ha-guardian --password YOUR_PASS</code></div>
-          </div>
-          <div class="form-row">
-            <label>Machine Password</label>
-            <input id="cfgCrowdsecKey" type="password" placeholder="machine password">
-            <div class="hint">The password set when registering the machine. Guardian logs in as a machine to submit decisions.</div>
+            <label>CrowdSec Config Path</label>
+            <input id="cfgCrowdsecConfig" type="text" placeholder="/config/.storage/crowdsec/config/config.yaml">
+            <div class="hint">Path to config.yaml inside the CrowdSec container.</div>
           </div>
           <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
             <button type="button" class="btn btn-ghost btn-sm" onclick="testCrowdsec()">Test Connection</button>
@@ -1141,9 +1136,8 @@ async function loadSettings() {
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     _renderDomainChips(c.trusted_domains || []);
     document.getElementById('cfgCrowdsecEnabled').checked = !!c.crowdsec_enabled;
-    document.getElementById('cfgCrowdsecUrl').value = c.crowdsec_lapi_url || '';
-    document.getElementById('cfgCrowdsecMachineId').value = c.crowdsec_machine_id || '';
-    document.getElementById('cfgCrowdsecKey').value = c.crowdsec_lapi_key || '';
+    document.getElementById('cfgCrowdsecContainer').value = c.crowdsec_container || '';
+    document.getElementById('cfgCrowdsecConfig').value = c.crowdsec_config || '';
     toggleCrowdsecFields();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
   // Also load system/firewall status
@@ -1246,9 +1240,8 @@ async function saveSettings(ev) {
       log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
       trusted_domains: _getCurrentDomains(),
       crowdsec_enabled: document.getElementById('cfgCrowdsecEnabled').checked,
-      crowdsec_lapi_url: document.getElementById('cfgCrowdsecUrl').value.trim(),
-      crowdsec_machine_id: document.getElementById('cfgCrowdsecMachineId').value.trim(),
-      crowdsec_lapi_key: document.getElementById('cfgCrowdsecKey').value.trim(),
+      crowdsec_container: document.getElementById('cfgCrowdsecContainer').value.trim(),
+      crowdsec_config: document.getElementById('cfgCrowdsecConfig').value.trim(),
     });
     toast('Settings saved', 'ok'); loadStats(); loadSettings();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -1292,16 +1285,15 @@ function toggleCrowdsecFields() {
   document.getElementById('crowdsecFields').style.display = enabled ? '' : 'none';
 }
 async function testCrowdsec() {
-  const url = document.getElementById('cfgCrowdsecUrl').value.trim();
-  const machine_id = document.getElementById('cfgCrowdsecMachineId').value.trim();
-  const password = document.getElementById('cfgCrowdsecKey').value.trim();
+  const container = document.getElementById('cfgCrowdsecContainer').value.trim();
+  const config = document.getElementById('cfgCrowdsecConfig').value.trim();
   const res = document.getElementById('crowdsecTestResult');
-  if (!url || !machine_id || !password) { res.textContent = '⚠ Enter URL, Machine ID and Password first'; res.style.color = 'var(--warn)'; return; }
+  if (!container) { res.textContent = '⚠ Enter container name first'; res.style.color = 'var(--warn)'; return; }
   res.textContent = 'Testing…'; res.style.color = 'var(--text-muted)';
   try {
-    const data = await api('POST', 'api/crowdsec/test', { url, machine_id, password });
-    if (data.ok) { res.textContent = '✓ Login OK — Guardian registered as machine'; res.style.color = 'var(--success)'; }
-    else { res.textContent = '✗ ' + (data.error || 'Connection failed'); res.style.color = 'var(--danger)'; }
+    const data = await api('POST', 'api/crowdsec/test', { container, config });
+    if (data.ok) { res.textContent = '✓ cscli reachable — ' + (data.version || 'OK'); res.style.color = 'var(--success)'; }
+    else { res.textContent = '✗ ' + (data.error || 'Failed'); res.style.color = 'var(--danger)'; }
   } catch (e) { res.textContent = '✗ ' + e.message; res.style.color = 'var(--danger)'; }
 }
 

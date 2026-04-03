@@ -28,7 +28,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.22.0"
+VERSION = "1.22.1"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -480,9 +480,8 @@ class Config:
         self.log_interval_minutes: int = 5
         self.log_file: str = LOG_FILE_DEFAULT
         self.crowdsec_enabled: bool = False
-        self.crowdsec_lapi_url: str = ""
-        self.crowdsec_machine_id: str = ""
-        self.crowdsec_lapi_key: str = ""  # machine password
+        self.crowdsec_container: str = "addon_424ccef4_crowdsec"
+        self.crowdsec_config: str = "/config/.storage/crowdsec/config/config.yaml"
         self._load()
 
     def _load(self):
@@ -531,12 +530,10 @@ class Config:
             self.log_interval_minutes = max(1, int(ov["log_interval_minutes"]))
         if "crowdsec_enabled" in ov:
             self.crowdsec_enabled = bool(ov["crowdsec_enabled"])
-        if "crowdsec_lapi_url" in ov:
-            self.crowdsec_lapi_url = str(ov["crowdsec_lapi_url"])
-        if "crowdsec_machine_id" in ov:
-            self.crowdsec_machine_id = str(ov["crowdsec_machine_id"])
-        if "crowdsec_lapi_key" in ov:
-            self.crowdsec_lapi_key = str(ov["crowdsec_lapi_key"])
+        if "crowdsec_container" in ov:
+            self.crowdsec_container = str(ov["crowdsec_container"])
+        if "crowdsec_config" in ov:
+            self.crowdsec_config = str(ov["crowdsec_config"])
 
     # HA internal networks that should never be banned
     HA_DEFAULT_WHITELIST = [
@@ -582,9 +579,8 @@ class Config:
         self._state.set_override("addon_poll_interval", self.addon_poll_interval)
         self._state.set_override("log_interval_minutes", self.log_interval_minutes)
         self._state.set_override("crowdsec_enabled", self.crowdsec_enabled)
-        self._state.set_override("crowdsec_lapi_url", self.crowdsec_lapi_url)
-        self._state.set_override("crowdsec_machine_id", self.crowdsec_machine_id)
-        self._state.set_override("crowdsec_lapi_key", self.crowdsec_lapi_key)
+        self._state.set_override("crowdsec_container", self.crowdsec_container)
+        self._state.set_override("crowdsec_config", self.crowdsec_config)
         # Whitelist and trusted_domains are auto-saved via property setters
 
     def to_dict(self) -> dict:
@@ -600,9 +596,8 @@ class Config:
             "whitelist": self.whitelist,
             "trusted_domains": self.trusted_domains,
             "crowdsec_enabled": self.crowdsec_enabled,
-            "crowdsec_lapi_url": self.crowdsec_lapi_url,
-            "crowdsec_machine_id": self.crowdsec_machine_id,
-            "crowdsec_lapi_key": self.crowdsec_lapi_key,
+            "crowdsec_container": self.crowdsec_container,
+            "crowdsec_config": self.crowdsec_config,
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -1652,80 +1647,39 @@ class BanManager:
             await self._flush()
         self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
-        # Submit to CrowdSec LAPI if configured
-        if self.config.crowdsec_enabled and self.config.crowdsec_lapi_url and self.config.crowdsec_lapi_key:
+        # Submit to CrowdSec via docker exec cscli decisions add (non-blocking)
+        if self.config.crowdsec_enabled and self.config.crowdsec_container:
             asyncio.ensure_future(self._crowdsec_submit(ip, dur))
         return True
 
     async def _crowdsec_submit(self, ip: str, duration_minutes: int):
-        """Submit a ban alert to CrowdSec LAPI as a machine (non-blocking, best-effort).
-        Logs in with machine credentials to get a JWT, then posts an alert."""
-        url = self.config.crowdsec_lapi_url.rstrip("/")
-        machine_id = self.config.crowdsec_machine_id
-        password = self.config.crowdsec_lapi_key
-        if not url or not machine_id or not password:
-            return
+        """Add a ban decision to CrowdSec via docker exec cscli decisions add.
+        This avoids LAPI authentication entirely — cscli has direct DB access."""
+        container = self.config.crowdsec_container
+        cfg = self.config.crowdsec_config
+        dur_str = f"{duration_minutes}m"
+        cmd = [
+            "docker", "exec", container,
+            "cscli", "--config", cfg,
+            "decisions", "add",
+            "--ip", ip,
+            "--duration", dur_str,
+            "--reason", "ha-guardian/brute-force",
+            "--type", "ban",
+        ]
         try:
-            async with aiohttp_client.ClientSession() as session:
-                # 1) Login to get JWT
-                login_resp = await session.post(
-                    f"{url}/v1/watchers/login",
-                    json={"machine_id": machine_id, "password": password, "scenarios": []},
-                    headers={"Content-Type": "application/json"},
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                )
-                if login_resp.status != 200:
-                    log.warning("CrowdSec: login failed (HTTP %d)", login_resp.status)
-                    return
-                token = (await login_resp.json()).get("token")
-                if not token:
-                    log.warning("CrowdSec: no token in login response")
-                    return
-
-                # 2) Push alert (LAPI creates a decision from the alert)
-                dur_str = f"{duration_minutes}m"
-                alert = [{
-                    "capacity": 0,
-                    "decisions": [{
-                        "duration": dur_str,
-                        "ip": ip,
-                        "reason": "ha-guardian/brute-force",
-                        "scenario": "ha-guardian/brute-force",
-                        "type": "ban",
-                        "scope": "ip",
-                        "value": ip,
-                    }],
-                    "events": [],
-                    "events_count": 1,
-                    "labels": None,
-                    "leakspeed": "0",
-                    "message": "Brute-force detected by HA Guardian",
-                    "scenario": "ha-guardian/brute-force",
-                    "scenario_hash": "",
-                    "scenario_version": "",
-                    "simulated": False,
-                    "source": {
-                        "ip": ip,
-                        "scope": "ip",
-                        "value": ip,
-                    },
-                    "start_at": datetime.now(timezone.utc).isoformat(),
-                    "stop_at": datetime.now(timezone.utc).isoformat(),
-                }]
-                headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                async with session.post(
-                    f"{url}/v1/alerts",
-                    json=alert,
-                    headers=headers,
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status in (200, 201):
-                        log.info("CrowdSec: submitted alert for %s", ip)
-                    else:
-                        body = await resp.text()
-                        log.warning("CrowdSec: alert submit failed for %s — HTTP %d: %s", ip, resp.status, body[:200])
+            loop = asyncio.get_event_loop()
+            r = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, timeout=10)
+            )
+            if r.returncode == 0:
+                log.info("CrowdSec: added decision for %s (%s)", ip, dur_str)
+            else:
+                err = r.stderr.decode(errors="replace").strip()
+                log.warning("CrowdSec: cscli failed for %s: %s", ip, err)
         except Exception as e:
-            log.warning("CrowdSec: could not submit alert for %s: %s", ip, e)
+            log.warning("CrowdSec: could not add decision for %s: %s", ip, e)
 
     def get_evidence(self, ip: str) -> list:
         return self._evidence.get(ip, [])
@@ -2365,12 +2319,10 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.trusted_domains = [s.strip() for s in d["trusted_domains"] if s.strip()]
         if "crowdsec_enabled" in d:
             config.crowdsec_enabled = bool(d["crowdsec_enabled"])
-        if "crowdsec_lapi_url" in d:
-            config.crowdsec_lapi_url = str(d["crowdsec_lapi_url"]).strip()
-        if "crowdsec_machine_id" in d:
-            config.crowdsec_machine_id = str(d["crowdsec_machine_id"]).strip()
-        if "crowdsec_lapi_key" in d:
-            config.crowdsec_lapi_key = str(d["crowdsec_lapi_key"]).strip()
+        if "crowdsec_container" in d:
+            config.crowdsec_container = str(d["crowdsec_container"]).strip()
+        if "crowdsec_config" in d:
+            config.crowdsec_config = str(d["crowdsec_config"]).strip()
         config.save()
         return web.json_response({"ok": True})
 
@@ -2781,50 +2733,24 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "source not found"}, status=404)
 
-    async def _crowdsec_login(url: str, machine_id: str, password: str) -> Optional[str]:
-        """Login to CrowdSec LAPI as a machine; return JWT token or None."""
-        try:
-            async with aiohttp_client.ClientSession() as session:
-                headers = {"Content-Type": "application/json"}
-                payload = {"machine_id": machine_id, "password": password, "scenarios": []}
-                async with session.post(
-                    f"{url}/v1/watchers/login",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get("token")
-                    body = await resp.text()
-                    log.warning("CrowdSec login failed (HTTP %d): %s", resp.status, body[:200])
-                    return None
-        except Exception as e:
-            log.warning("CrowdSec login error: %s", e)
-            return None
-
     async def handle_crowdsec_test(req):
-        """Test CrowdSec LAPI connectivity by logging in as a machine."""
+        """Test CrowdSec integration by running: docker exec <container> cscli version"""
         try:
             d = await req.json()
-            url = d.get("url", "").rstrip("/")
-            machine_id = d.get("machine_id", "").strip()
-            password = d.get("password", "").strip()
-            if not url or not machine_id or not password:
-                return web.json_response({"ok": False, "error": "url, machine_id and password required"}, status=400)
-            async with aiohttp_client.ClientSession() as session:
-                async with session.post(
-                    f"{url}/v1/watchers/login",
-                    json={"machine_id": machine_id, "password": password, "scenarios": []},
-                    headers={"Content-Type": "application/json"},
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    body = await resp.text()
-                    if resp.status == 200:
-                        return web.json_response({"ok": True})
-                    return web.json_response({"ok": False, "error": f"HTTP {resp.status}: {body[:300]}"})
-        except aiohttp_client.ClientConnectorError as e:
-            return web.json_response({"ok": False, "error": f"Connection refused: {e}"})
+            container = d.get("container", "").strip()
+            cfg = d.get("config", "").strip()
+            if not container:
+                return web.json_response({"ok": False, "error": "container name required"}, status=400)
+            cmd = ["docker", "exec", container, "cscli", "--config", cfg, "version"]
+            loop = asyncio.get_event_loop()
+            r = await loop.run_in_executor(
+                None, lambda: subprocess.run(cmd, capture_output=True, timeout=10)
+            )
+            if r.returncode == 0:
+                out = r.stdout.decode(errors="replace").strip()
+                return web.json_response({"ok": True, "version": out})
+            err = r.stderr.decode(errors="replace").strip()
+            return web.json_response({"ok": False, "error": err or "cscli returned non-zero"})
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)})
 
