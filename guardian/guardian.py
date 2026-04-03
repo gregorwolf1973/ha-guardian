@@ -682,7 +682,8 @@ class CrowdSecManager:
             and bool(self._state.crowdsec_machine_password)
         )
 
-    async def _login(self) -> Optional[str]:
+    async def _login(self) -> tuple:
+        """Returns (token_or_None, error_str_or_None)."""
         url = self._state.crowdsec_lapi_url.rstrip("/")
         machine_id = self._state.crowdsec_machine_id
         password = self._state.crowdsec_machine_password
@@ -693,26 +694,30 @@ class CrowdSecManager:
                     json={"machine_id": machine_id, "password": password, "scenarios": []},
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 ) as resp:
+                    body = await resp.text()
                     if resp.status == 200:
-                        data = await resp.json()
-                        self._jwt = data.get("token")
-                        # Refresh 1 h before the 24 h token expires
+                        data = json.loads(body)
+                        token = data.get("token")
+                        if not token:
+                            log.warning("CrowdSec: 200 but no token: %s", body[:200])
+                            return None, f"HTTP 200 but no token in response: {body[:200]}"
+                        self._jwt = token
                         self._jwt_expires = datetime.now(timezone.utc) + timedelta(hours=23)
                         log.info("CrowdSec: logged in as '%s'", machine_id)
-                        return self._jwt
-                    body = await resp.text()
-                    log.warning("CrowdSec login failed (%d): %s", resp.status, body[:200])
-                    return None
+                        return self._jwt, None
+                    log.warning("CrowdSec login failed (%d): %s", resp.status, body[:300])
+                    return None, f"HTTP {resp.status}: {body[:300]}"
         except Exception as e:
             log.warning("CrowdSec login error: %s", e)
-            return None
+            return None, str(e)
 
     async def _get_jwt(self) -> Optional[str]:
         async with self._lock:
             now = datetime.now(timezone.utc)
             if self._jwt and self._jwt_expires and now < self._jwt_expires:
                 return self._jwt
-            return await self._login()
+            token, _ = await self._login()
+            return token
 
     async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
         """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
@@ -795,10 +800,10 @@ class CrowdSecManager:
         if not self._state.crowdsec_machine_password:
             return {"ok": False, "error": "Password not configured"}
         self._jwt = None  # force fresh login
-        token = await self._login()
+        token, error = await self._login()
         if token:
             return {"ok": True, "message": f"Login successful as '{self._state.crowdsec_machine_id}'"}
-        return {"ok": False, "error": "Login failed — check machine ID and password"}
+        return {"ok": False, "error": error or "Login failed"}
 
 
 # ---------------------------------------------------------------------------
