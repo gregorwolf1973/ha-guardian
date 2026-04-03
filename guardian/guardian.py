@@ -2,6 +2,7 @@
 """HA Guardian - Brute-Force Protection for Home Assistant (Multi-Source)"""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.23.1"
+VERSION = "1.23.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -689,9 +690,11 @@ class CrowdSecManager:
         password = self._state.crowdsec_machine_password
         try:
             async with aiohttp_client.ClientSession() as session:
+                # CrowdSec LAPI expects SHA256(password), not plaintext
+                hashed_pw = hashlib.sha256(password.encode()).hexdigest()
                 async with session.post(
                     f"{url}/v1/watchers/login",
-                    json={"machine_id": machine_id, "password": password, "scenarios": []},
+                    json={"machine_id": machine_id, "password": hashed_pw, "scenarios": []},
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 ) as resp:
                     body = await resp.text()
