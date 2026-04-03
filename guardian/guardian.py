@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.23.3"
+VERSION = "1.23.4"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -791,19 +791,33 @@ class CrowdSecManager:
         except Exception as e:
             log.warning("CrowdSec: submit error for %s: %s", ip, e)
 
-    async def test_connection(self) -> dict:
-        """Test login and return status dict."""
-        if not self._state.crowdsec_lapi_url:
+    async def test_connection(self, url: str = None, machine_id: str = None, password: str = None) -> dict:
+        """Test login with given or stored credentials."""
+        test_url = (url or self._state.crowdsec_lapi_url or "").rstrip("/")
+        test_id   = machine_id or self._state.crowdsec_machine_id or ""
+        test_pw   = password or self._state.crowdsec_machine_password or ""
+        if not test_url:
             return {"ok": False, "error": "LAPI URL not configured"}
-        if not self._state.crowdsec_machine_id:
+        if not test_id:
             return {"ok": False, "error": "Machine ID not configured"}
-        if not self._state.crowdsec_machine_password:
-            return {"ok": False, "error": "Password not configured"}
-        self._jwt = None  # force fresh login
-        token, error = await self._login()
-        if token:
-            return {"ok": True, "message": f"Login successful as '{self._state.crowdsec_machine_id}'"}
-        return {"ok": False, "error": error or "Login failed"}
+        if not test_pw:
+            return {"ok": False, "error": "Password not configured — enter it in the field and click Test"}
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                async with session.post(
+                    f"{test_url}/v1/watchers/login",
+                    json={"machine_id": test_id, "password": test_pw, "scenarios": []},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status == 200:
+                        data = json.loads(body)
+                        if data.get("token"):
+                            return {"ok": True, "message": f"Login successful as '{test_id}'"}
+                        return {"ok": False, "error": f"HTTP 200 but no token: {body[:200]}"}
+                    return {"ok": False, "error": f"HTTP {resp.status}: {body[:300]}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -2487,7 +2501,15 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     async def handle_crowdsec_test(req):
         if crowdsec_mgr is None:
             return web.json_response({"ok": False, "error": "CrowdSec manager not initialized"})
-        result = await crowdsec_mgr.test_connection()
+        try:
+            d = await req.json()
+        except Exception:
+            d = {}
+        result = await crowdsec_mgr.test_connection(
+            url=d.get("url") or None,
+            machine_id=d.get("machine_id") or None,
+            password=d.get("password") or None,
+        )
         return web.json_response(result)
 
     # --- System status: protected mode + iptables ---

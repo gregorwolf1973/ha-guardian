@@ -1271,15 +1271,14 @@ async function testCrowdSec() {
   result.textContent = 'Testing…';
   result.style.color = 'var(--muted)';
   try {
-    // Save current credentials first so the backend can use them
-    const payload = {
-      crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
-      crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
+    // Pass credentials directly in the test request (page may have cleared the password field)
+    const testPayload = {
+      url: document.getElementById('cfgCsUrl').value.trim(),
+      machine_id: document.getElementById('cfgCsMachineId').value.trim(),
     };
     const pw = document.getElementById('cfgCsPassword').value;
-    if (pw) payload.crowdsec_machine_password = pw;
-    await api('POST', 'api/config', payload);
-    const r = await api('POST', 'api/crowdsec/test');
+    if (pw) testPayload.password = pw;
+    const r = await api('POST', 'api/crowdsec/test', testPayload);
     if (r.ok) {
       result.textContent = '✓ ' + r.message;
       result.style.color = 'var(--success, #50fa7b)';
