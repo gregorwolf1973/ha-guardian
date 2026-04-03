@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.23.5"
+VERSION = "1.23.6"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -802,14 +802,18 @@ class CrowdSecManager:
             return {"ok": False, "error": "Machine ID not configured"}
         if not test_pw:
             return {"ok": False, "error": "Password not configured — enter it in the field and click Test"}
+        log.info("CrowdSec test: POST %s/v1/watchers/login id=%s pw_len=%d pw_start=%s",
+                 test_url, test_id, len(test_pw), test_pw[:2])
         try:
-            async with aiohttp_client.ClientSession() as session:
+            connector = aiohttp_client.TCPConnector(ssl=False)
+            async with aiohttp_client.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{test_url}/v1/watchers/login",
                     json={"machine_id": test_id, "password": test_pw, "scenarios": []},
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 ) as resp:
                     body = await resp.text()
+                    log.info("CrowdSec test response: %d — %s", resp.status, body[:200])
                     if resp.status == 200:
                         data = json.loads(body)
                         if data.get("token"):
@@ -817,6 +821,7 @@ class CrowdSecManager:
                         return {"ok": False, "error": f"HTTP 200 but no token: {body[:200]}"}
                     return {"ok": False, "error": f"HTTP {resp.status}: {body[:300]}"}
         except Exception as e:
+            log.warning("CrowdSec test exception: %s", e)
             return {"ok": False, "error": str(e)}
 
 
