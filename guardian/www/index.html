@@ -464,6 +464,39 @@
         </div>
       </div>
 
+      <div class="field-group" style="grid-column: 1 / -1">
+        <h3>CrowdSec Integration</h3>
+        <div style="background:var(--surface-alt,#1e1e2e);border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.8">
+          <strong>One-time setup</strong> — run this in the <em>CrowdSec addon terminal</em>:<br>
+          <code style="display:inline-block;background:var(--surface2);padding:2px 10px;border-radius:4px;font-family:monospace;margin:4px 0">cscli machines add ha-guardian --password YOUR_PASSWORD</code><br>
+          Then enter the LAPI URL and credentials below. Guardian will submit a ban decision to CrowdSec every time it bans an IP.
+        </div>
+        <div class="form-row" style="align-items:center;gap:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="cfgCsEnabled" style="width:16px;height:16px">
+            Enable CrowdSec integration
+          </label>
+        </div>
+        <div class="form-row">
+          <label>LAPI URL</label>
+          <input id="cfgCsUrl" type="text" placeholder="http://172.30.33.4:8080">
+          <div class="hint">CrowdSec Local API URL. Find the IP in the CrowdSec addon logs.</div>
+        </div>
+        <div class="form-row">
+          <label>Machine ID</label>
+          <input id="cfgCsMachineId" type="text" placeholder="ha-guardian">
+        </div>
+        <div class="form-row">
+          <label>Password</label>
+          <input id="cfgCsPassword" type="password" placeholder="(leave blank to keep existing)">
+          <div class="hint">Stored in <code>/data/guardian_state.json</code> — never exported via API.</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+          <button type="button" class="btn btn-primary btn-sm" onclick="testCrowdSec()">Test Connection</button>
+          <span id="csTestResult" style="font-size:13px"></span>
+        </div>
+      </div>
+
     </div>
     <div class="save-row">
       <button class="btn btn-primary" type="submit">Save Settings</button>
@@ -1112,6 +1145,14 @@ async function loadSettings() {
     document.getElementById('cfgAddonPoll').value = c.addon_poll_interval || 15;
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     _renderDomainChips(c.trusted_domains || []);
+    // CrowdSec
+    document.getElementById('cfgCsEnabled').checked = !!c.crowdsec_enabled;
+    document.getElementById('cfgCsUrl').value = c.crowdsec_lapi_url || '';
+    document.getElementById('cfgCsMachineId').value = c.crowdsec_machine_id || '';
+    document.getElementById('cfgCsPassword').value = '';  // never prefill
+    const csResult = document.getElementById('csTestResult');
+    csResult.textContent = c.crowdsec_configured ? '✓ Credentials stored' : '';
+    csResult.style.color = 'var(--muted)';
   } catch (e) { toast('Error: ' + e.message, 'err'); }
   // Also load system/firewall status
   loadSystemStatus();
@@ -1203,7 +1244,7 @@ async function restartAddon() {
 async function saveSettings(ev) {
   ev.preventDefault();
   try {
-    await api('POST', 'api/config', {
+    const payload = {
       max_attempts: parseInt(document.getElementById('cfgMaxAttempts').value),
       window_minutes: parseInt(document.getElementById('cfgWindow').value),
       ban_duration_minutes: parseInt(document.getElementById('cfgDuration').value),
@@ -1212,9 +1253,45 @@ async function saveSettings(ev) {
       addon_poll_interval: parseInt(document.getElementById('cfgAddonPoll').value),
       log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
       trusted_domains: _getCurrentDomains(),
-    });
+      crowdsec_enabled: document.getElementById('cfgCsEnabled').checked,
+      crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
+      crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
+    };
+    const pw = document.getElementById('cfgCsPassword').value;
+    if (pw) payload.crowdsec_machine_password = pw;
+    await api('POST', 'api/config', payload);
     toast('Settings saved', 'ok'); loadStats(); loadSettings();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+async function testCrowdSec() {
+  const btn = event.target;
+  const result = document.getElementById('csTestResult');
+  btn.disabled = true;
+  result.textContent = 'Testing…';
+  result.style.color = 'var(--muted)';
+  try {
+    // Save current credentials first so the backend can use them
+    const payload = {
+      crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
+      crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
+    };
+    const pw = document.getElementById('cfgCsPassword').value;
+    if (pw) payload.crowdsec_machine_password = pw;
+    await api('POST', 'api/config', payload);
+    const r = await api('POST', 'api/crowdsec/test');
+    if (r.ok) {
+      result.textContent = '✓ ' + r.message;
+      result.style.color = 'var(--success, #50fa7b)';
+    } else {
+      result.textContent = '✗ ' + r.error;
+      result.style.color = 'var(--danger)';
+    }
+  } catch (e) {
+    result.textContent = '✗ ' + e.message;
+    result.style.color = 'var(--danger)';
+  }
+  btn.disabled = false;
 }
 
 // ---- Trusted Domains ----

@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.22.4"
+VERSION = "1.23.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -452,6 +452,43 @@ class PersistentState:
         self._data["my_ip"] = value
         self.save()
 
+    # -- CrowdSec Integration --
+    @property
+    def crowdsec_enabled(self) -> bool:
+        return self._data.get("crowdsec_enabled", False)
+
+    @crowdsec_enabled.setter
+    def crowdsec_enabled(self, value: bool):
+        self._data["crowdsec_enabled"] = bool(value)
+        self.save()
+
+    @property
+    def crowdsec_lapi_url(self) -> str:
+        return self._data.get("crowdsec_lapi_url", "")
+
+    @crowdsec_lapi_url.setter
+    def crowdsec_lapi_url(self, value: str):
+        self._data["crowdsec_lapi_url"] = value
+        self.save()
+
+    @property
+    def crowdsec_machine_id(self) -> str:
+        return self._data.get("crowdsec_machine_id", "")
+
+    @crowdsec_machine_id.setter
+    def crowdsec_machine_id(self, value: str):
+        self._data["crowdsec_machine_id"] = value
+        self.save()
+
+    @property
+    def crowdsec_machine_password(self) -> str:
+        return self._data.get("crowdsec_machine_password", "")
+
+    @crowdsec_machine_password.setter
+    def crowdsec_machine_password(self, value: str):
+        self._data["crowdsec_machine_password"] = value
+        self.save()
+
     # -- Config overrides --
     @property
     def config_overrides(self) -> dict:
@@ -582,6 +619,15 @@ class Config:
             "log_file": self.log_file,
             "whitelist": self.whitelist,
             "trusted_domains": self.trusted_domains,
+            # CrowdSec — password intentionally omitted from API response
+            "crowdsec_enabled": self._state.crowdsec_enabled,
+            "crowdsec_lapi_url": self._state.crowdsec_lapi_url,
+            "crowdsec_machine_id": self._state.crowdsec_machine_id,
+            "crowdsec_configured": bool(
+                self._state.crowdsec_lapi_url
+                and self._state.crowdsec_machine_id
+                and self._state.crowdsec_machine_password
+            ),
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -607,6 +653,152 @@ class Config:
             except ValueError:
                 pass
         return False
+
+
+# ---------------------------------------------------------------------------
+# CrowdSec Manager — submits ban decisions to CrowdSec LAPI
+# ---------------------------------------------------------------------------
+class CrowdSecManager:
+    """Logs in to the CrowdSec Local API as a watcher machine and submits
+    ban decisions for each IP that Guardian bans.
+
+    Setup (one-time, in the CrowdSec addon terminal):
+        cscli machines add ha-guardian --password <your_password>
+    Then configure LAPI URL, machine_id and password in Guardian Settings.
+    """
+
+    def __init__(self, state: PersistentState):
+        self._state = state
+        self._jwt: Optional[str] = None
+        self._jwt_expires: Optional[datetime] = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self._state.crowdsec_enabled
+            and bool(self._state.crowdsec_lapi_url)
+            and bool(self._state.crowdsec_machine_id)
+            and bool(self._state.crowdsec_machine_password)
+        )
+
+    async def _login(self) -> Optional[str]:
+        url = self._state.crowdsec_lapi_url.rstrip("/")
+        machine_id = self._state.crowdsec_machine_id
+        password = self._state.crowdsec_machine_password
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                async with session.post(
+                    f"{url}/v1/watchers/login",
+                    json={"machine_id": machine_id, "password": password, "scenarios": []},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self._jwt = data.get("token")
+                        # Refresh 1 h before the 24 h token expires
+                        self._jwt_expires = datetime.now(timezone.utc) + timedelta(hours=23)
+                        log.info("CrowdSec: logged in as '%s'", machine_id)
+                        return self._jwt
+                    body = await resp.text()
+                    log.warning("CrowdSec login failed (%d): %s", resp.status, body[:200])
+                    return None
+        except Exception as e:
+            log.warning("CrowdSec login error: %s", e)
+            return None
+
+    async def _get_jwt(self) -> Optional[str]:
+        async with self._lock:
+            now = datetime.now(timezone.utc)
+            if self._jwt and self._jwt_expires and now < self._jwt_expires:
+                return self._jwt
+            return await self._login()
+
+    async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
+        """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
+        if not self.enabled:
+            return
+        jwt = await self._get_jwt()
+        if not jwt:
+            return
+        url = self._state.crowdsec_lapi_url.rstrip("/")
+        now = datetime.now(timezone.utc)
+        stop_at = (now + timedelta(minutes=max(1, duration_minutes))).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        duration_str = f"{max(1, duration_minutes)}m"
+        payload = [{
+            "message": reason,
+            "events": [{
+                "timestamp": start_at,
+                "meta": [{"key": "source_ip", "value": ip}],
+            }],
+            "stop_at": stop_at,
+            "start_at": start_at,
+            "capacity": -1,
+            "leakspeed": "0s",
+            "simulated": False,
+            "source": {"scope": "ip", "value": ip, "ip": ip},
+            "scenario": "guardian/brute-force",
+            "scenario_version": VERSION,
+            "scenario_hash": "",
+            "decisions": [{
+                "duration": duration_str,
+                "origin": "ha-guardian",
+                "scenario": "guardian/brute-force",
+                "scope": "ip",
+                "simulated": False,
+                "type": "ban",
+                "value": ip,
+            }],
+        }]
+        await self._post_alerts(url, payload, jwt, ip)
+
+    async def _post_alerts(self, url: str, payload: list, jwt: str, ip: str):
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                async with session.post(
+                    f"{url}/v1/alerts",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {jwt}"},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status in (200, 201):
+                        log.info("CrowdSec: decision submitted for %s", ip)
+                        return
+                    if resp.status == 401:
+                        # Token expired — invalidate and retry once
+                        self._jwt = None
+                        jwt2 = await self._get_jwt()
+                        if jwt2:
+                            async with session.post(
+                                f"{url}/v1/alerts",
+                                json=payload,
+                                headers={"Authorization": f"Bearer {jwt2}"},
+                                timeout=aiohttp_client.ClientTimeout(total=10),
+                            ) as resp2:
+                                if resp2.status in (200, 201):
+                                    log.info("CrowdSec: decision submitted for %s (retry)", ip)
+                                    return
+                                log.warning("CrowdSec: submit failed after retry (%d)", resp2.status)
+                        return
+                    body = await resp.text()
+                    log.warning("CrowdSec: alert submit failed (%d): %s", resp.status, body[:200])
+        except Exception as e:
+            log.warning("CrowdSec: submit error for %s: %s", ip, e)
+
+    async def test_connection(self) -> dict:
+        """Test login and return status dict."""
+        if not self._state.crowdsec_lapi_url:
+            return {"ok": False, "error": "LAPI URL not configured"}
+        if not self._state.crowdsec_machine_id:
+            return {"ok": False, "error": "Machine ID not configured"}
+        if not self._state.crowdsec_machine_password:
+            return {"ok": False, "error": "Password not configured"}
+        self._jwt = None  # force fresh login
+        token = await self._login()
+        if token:
+            return {"ok": True, "message": f"Login successful as '{self._state.crowdsec_machine_id}'"}
+        return {"ok": False, "error": "Login failed — check machine ID and password"}
 
 
 # ---------------------------------------------------------------------------
@@ -1378,8 +1570,9 @@ class BanManager:
     _NFT_SET   = "blocklist"
     _NFT_CHAIN = "input"
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, crowdsec: "CrowdSecManager" = None):
         self.config = config
+        self._crowdsec = crowdsec
         self._bans: dict = {}
         self._evidence: dict = {}   # ip -> list of event dicts
         self._lock = asyncio.Lock()
@@ -1631,6 +1824,8 @@ class BanManager:
             await self._flush()
         self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
+        if self._crowdsec:
+            asyncio.create_task(self._crowdsec.submit_ban(ip, dur, reason))
         return True
 
     def get_evidence(self, ip: str) -> list:
@@ -2109,7 +2304,7 @@ def _index_html() -> str:
 
 
 def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa: PLR0915
-              rules_mgr=None) -> web.Application:
+              rules_mgr=None, crowdsec_mgr=None) -> web.Application:
     app = web.Application()
 
     async def handle_index(req):
@@ -2269,11 +2464,26 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.log_interval_minutes = max(1, int(d["log_interval_minutes"]))
         if "trusted_domains" in d:
             config.trusted_domains = [s.strip() for s in d["trusted_domains"] if s.strip()]
+        # CrowdSec settings (stored in persistent state, not in options.json)
+        if "crowdsec_enabled" in d:
+            config._state.crowdsec_enabled = bool(d["crowdsec_enabled"])
+        if "crowdsec_lapi_url" in d:
+            config._state.crowdsec_lapi_url = str(d["crowdsec_lapi_url"]).strip()
+        if "crowdsec_machine_id" in d:
+            config._state.crowdsec_machine_id = str(d["crowdsec_machine_id"]).strip()
+        if "crowdsec_machine_password" in d and d["crowdsec_machine_password"]:
+            config._state.crowdsec_machine_password = str(d["crowdsec_machine_password"])
         config.save()
         return web.json_response({"ok": True})
 
     async def handle_health(req):
         return web.json_response({"status": "ok", "version": VERSION})
+
+    async def handle_crowdsec_test(req):
+        if crowdsec_mgr is None:
+            return web.json_response({"ok": False, "error": "CrowdSec manager not initialized"})
+        result = await crowdsec_mgr.test_connection()
+        return web.json_response(result)
 
     # --- System status: protected mode + iptables ---
     async def handle_get_system(req):
@@ -2710,6 +2920,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_get("/api/config", handle_get_config)
     app.router.add_post("/api/config", handle_post_config)
     app.router.add_get("/api/health", handle_health)
+    app.router.add_post("/api/crowdsec/test", handle_crowdsec_test)
     app.router.add_get("/api/system", handle_get_system)
     app.router.add_post("/api/system/protection", handle_set_protection)
     app.router.add_post("/api/system/restart", handle_restart_addon)
@@ -2734,7 +2945,8 @@ async def main():
     rules_mgr = RulesManager()
     state = PersistentState()
     config = Config(state)
-    bans = BanManager(config)
+    crowdsec_mgr = CrowdSecManager(state)
+    bans = BanManager(config, crowdsec=crowdsec_mgr)
     bans.restore_iptables()
     alert_tracker = AlertTracker(config)
     detector = Detector(config, bans, alert_tracker)
@@ -2744,7 +2956,7 @@ async def main():
     log.info("HA Guardian %s starting on port %d", VERSION, PORT)
 
     app = build_app(config, bans, detector, source_mgr, alert_tracker, scanner,
-                    rules_mgr=rules_mgr)
+                    rules_mgr=rules_mgr, crowdsec_mgr=crowdsec_mgr)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
