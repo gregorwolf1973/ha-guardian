@@ -28,7 +28,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.21.9"
+VERSION = "1.22.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -1670,7 +1670,7 @@ class BanManager:
                 # 1) Login to get JWT
                 login_resp = await session.post(
                     f"{url}/v1/watchers/login",
-                    json={"machine_id": machine_id, "password": hashlib.sha256(password.encode()).hexdigest(), "scenarios": []},
+                    json={"machine_id": machine_id, "password": password, "scenarios": []},
                     headers={"Content-Type": "application/json"},
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 )
@@ -2786,7 +2786,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         try:
             async with aiohttp_client.ClientSession() as session:
                 headers = {"Content-Type": "application/json"}
-                payload = {"machine_id": machine_id, "password": hashlib.sha256(password.encode()).hexdigest(), "scenarios": []}
+                payload = {"machine_id": machine_id, "password": password, "scenarios": []}
                 async with session.post(
                     f"{url}/v1/watchers/login",
                     json=payload,
@@ -2804,7 +2804,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return None
 
     async def handle_crowdsec_test(req):
-        """Test CrowdSec LAPI connectivity — tries both plain and SHA256 password."""
+        """Test CrowdSec LAPI connectivity by logging in as a machine."""
         try:
             d = await req.json()
             url = d.get("url", "").rstrip("/")
@@ -2812,29 +2812,17 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             password = d.get("password", "").strip()
             if not url or not machine_id or not password:
                 return web.json_response({"ok": False, "error": "url, machine_id and password required"}, status=400)
-            pw_plain = password
-            pw_sha256 = hashlib.sha256(password.encode()).hexdigest()
             async with aiohttp_client.ClientSession() as session:
-                headers = {"Content-Type": "application/json"}
-                for pw_label, pw in [("plain", pw_plain), ("sha256", pw_sha256)]:
-                    payload = {"machine_id": machine_id, "password": pw, "scenarios": []}
-                    async with session.post(
-                        f"{url}/v1/watchers/login",
-                        json=payload,
-                        headers=headers,
-                        timeout=aiohttp_client.ClientTimeout(total=10),
-                    ) as resp:
-                        body = await resp.text()
-                        log.info("CrowdSec test [%s] HTTP %d: %s", pw_label, resp.status, body[:300])
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            token = data.get("token")
-                            if token:
-                                return web.json_response({"ok": True, "method": pw_label})
-                        if resp.status not in (401, 403):
-                            # Non-auth error (e.g. 422 missing field) — return immediately
-                            return web.json_response({"ok": False, "error": f"HTTP {resp.status}: {body[:300]}"})
-            return web.json_response({"ok": False, "error": "Login failed with both plain and sha256 password — check machine_id, validate the machine, and verify password"})
+                async with session.post(
+                    f"{url}/v1/watchers/login",
+                    json={"machine_id": machine_id, "password": password, "scenarios": []},
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status == 200:
+                        return web.json_response({"ok": True})
+                    return web.json_response({"ok": False, "error": f"HTTP {resp.status}: {body[:300]}"})
         except aiohttp_client.ClientConnectorError as e:
             return web.json_response({"ok": False, "error": f"Connection refused: {e}"})
         except Exception as e:
