@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.21.4"
+VERSION = "1.21.5"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -478,6 +478,9 @@ class Config:
         self.addon_poll_interval: int = 15
         self.log_interval_minutes: int = 5
         self.log_file: str = LOG_FILE_DEFAULT
+        self.crowdsec_enabled: bool = False
+        self.crowdsec_lapi_url: str = ""
+        self.crowdsec_lapi_key: str = ""
         self._load()
 
     def _load(self):
@@ -524,6 +527,12 @@ class Config:
             self.addon_poll_interval = max(5, int(ov["addon_poll_interval"]))
         if "log_interval_minutes" in ov:
             self.log_interval_minutes = max(1, int(ov["log_interval_minutes"]))
+        if "crowdsec_enabled" in ov:
+            self.crowdsec_enabled = bool(ov["crowdsec_enabled"])
+        if "crowdsec_lapi_url" in ov:
+            self.crowdsec_lapi_url = str(ov["crowdsec_lapi_url"])
+        if "crowdsec_lapi_key" in ov:
+            self.crowdsec_lapi_key = str(ov["crowdsec_lapi_key"])
 
     # HA internal networks that should never be banned
     HA_DEFAULT_WHITELIST = [
@@ -568,6 +577,9 @@ class Config:
         self._state.set_override("scan_interval_seconds", self.scan_interval_seconds)
         self._state.set_override("addon_poll_interval", self.addon_poll_interval)
         self._state.set_override("log_interval_minutes", self.log_interval_minutes)
+        self._state.set_override("crowdsec_enabled", self.crowdsec_enabled)
+        self._state.set_override("crowdsec_lapi_url", self.crowdsec_lapi_url)
+        self._state.set_override("crowdsec_lapi_key", self.crowdsec_lapi_key)
         # Whitelist and trusted_domains are auto-saved via property setters
 
     def to_dict(self) -> dict:
@@ -582,6 +594,9 @@ class Config:
             "log_file": self.log_file,
             "whitelist": self.whitelist,
             "trusted_domains": self.trusted_domains,
+            "crowdsec_enabled": self.crowdsec_enabled,
+            "crowdsec_lapi_url": self.crowdsec_lapi_url,
+            "crowdsec_lapi_key": self.crowdsec_lapi_key,
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -1303,6 +1318,24 @@ class SourceManager:
 
         return best_file or docker_id
 
+    def remove_source(self, source_id: str, delete_file: bool = False) -> bool:
+        """Remove a source from tracking. If delete_file=True, also delete the file."""
+        src = self._sources.get(source_id)
+        if not src:
+            return False
+        if delete_file and src.get("type") == "file":
+            path = src.get("path", "")
+            if path:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                    log.info("Deleted log file: %s", path)
+                except Exception as e:
+                    log.warning("Could not delete file %s: %s", path, e)
+        del self._sources[source_id]
+        self._save()
+        log.info("Removed source: %s", source_id)
+        return True
+
     def get_supervisor_token(self) -> str:
         return self._supervisor_token
 
@@ -1613,7 +1646,41 @@ class BanManager:
             await self._flush()
         self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
+        # Submit to CrowdSec LAPI if configured
+        if self.config.crowdsec_enabled and self.config.crowdsec_lapi_url and self.config.crowdsec_lapi_key:
+            asyncio.ensure_future(self._crowdsec_submit(ip, dur))
         return True
+
+    async def _crowdsec_submit(self, ip: str, duration_minutes: int):
+        """Submit a ban decision to CrowdSec LAPI (non-blocking, best-effort)."""
+        dur_str = f"{duration_minutes}m"
+        payload = [{
+            "duration": dur_str,
+            "ip": ip,
+            "reason": "ha-guardian",
+            "scenario": "ha-guardian/brute-force",
+            "type": "ban",
+            "scope": "ip",
+            "value": ip,
+        }]
+        url = self.config.crowdsec_lapi_url.rstrip("/")
+        key = self.config.crowdsec_lapi_key
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                async with session.post(
+                    f"{url}/v1/decisions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status in (200, 201):
+                        log.info("CrowdSec: submitted ban for %s", ip)
+                    else:
+                        body = await resp.text()
+                        log.warning("CrowdSec: failed to submit ban for %s — HTTP %d: %s", ip, resp.status, body[:200])
+        except Exception as e:
+            log.warning("CrowdSec: could not submit ban for %s: %s", ip, e)
 
     def get_evidence(self, ip: str) -> list:
         return self._evidence.get(ip, [])
@@ -2251,6 +2318,12 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.log_interval_minutes = max(1, int(d["log_interval_minutes"]))
         if "trusted_domains" in d:
             config.trusted_domains = [s.strip() for s in d["trusted_domains"] if s.strip()]
+        if "crowdsec_enabled" in d:
+            config.crowdsec_enabled = bool(d["crowdsec_enabled"])
+        if "crowdsec_lapi_url" in d:
+            config.crowdsec_lapi_url = str(d["crowdsec_lapi_url"]).strip()
+        if "crowdsec_lapi_key" in d:
+            config.crowdsec_lapi_key = str(d["crowdsec_lapi_key"]).strip()
         config.save()
         return web.json_response({"ok": True})
 
@@ -2644,6 +2717,40 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
 
+    async def handle_delete_source(req):
+        """Remove a source from tracking; optionally delete the file."""
+        source_id = req.match_info["id"]
+        delete_file = req.rel_url.query.get("delete_file", "false").lower() == "true"
+        ok = source_mgr.remove_source(source_id, delete_file=delete_file)
+        if ok:
+            return web.json_response({"ok": True})
+        return web.json_response({"ok": False, "error": "source not found"}, status=404)
+
+    async def handle_crowdsec_test(req):
+        """Test connectivity to a CrowdSec LAPI instance."""
+        try:
+            d = await req.json()
+            url = d.get("url", "").rstrip("/")
+            key = d.get("key", "")
+            if not url or not key:
+                return web.json_response({"ok": False, "error": "url and key required"}, status=400)
+            async with aiohttp_client.ClientSession() as session:
+                headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                async with session.get(
+                    f"{url}/v1/watchers",
+                    headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status in (200, 403):
+                        # 403 means auth is working but key has no watcher permissions — still reachable
+                        return web.json_response({"ok": True, "status": resp.status})
+                    body = await resp.text()
+                    return web.json_response({"ok": False, "error": f"HTTP {resp.status}: {body[:200]}"})
+        except aiohttp_client.ClientConnectorError as e:
+            return web.json_response({"ok": False, "error": f"Connection refused: {e}"})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/stats", handle_stats)
     app.router.add_get("/api/events", handle_events)
@@ -2663,6 +2770,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/sources/add", handle_add_custom_source)
     app.router.add_post("/api/sources/preview", handle_preview_source)
     app.router.add_post("/api/sources/reassign", handle_reassign_source)
+    app.router.add_delete("/api/sources/{id}", handle_delete_source)
     app.router.add_get("/api/addons", handle_get_addons)
     app.router.add_post("/api/addons/toggle", handle_toggle_addon)
     app.router.add_post("/api/addons/preview", handle_preview_addon)
@@ -2686,6 +2794,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/rules/test", handle_test_rule)
     app.router.add_get("/api/events/{ip}", handle_ip_events)
     app.router.add_post("/api/rules/generate", handle_generate_regex)
+    app.router.add_post("/api/crowdsec/test", handle_crowdsec_test)
 
     return app
 

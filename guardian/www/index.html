@@ -268,7 +268,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Log Line</th><th></th></tr>
+        <tr><th>Time</th><th>IP Address</th><th>Source</th><th>Attempts</th><th>Status</th><th>Rule</th><th></th></tr>
       </thead>
       <tbody id="eventsTable">
         <tr class="empty-row"><td colspan="7">No events yet</td></tr>
@@ -455,9 +455,40 @@
       <div class="field-group" style="grid-column: 1 / -1">
         <h3>Trusted Domains</h3>
         <div class="form-row">
-          <label>Comma-separated domain names</label>
-          <input id="cfgDomains" type="text" placeholder="mynas.local, trusted.vpn.example.com">
-          <div class="hint">Hostnames whose reverse DNS resolves to these domains will not be banned.</div>
+          <label>Hostnames whose reverse DNS resolves to these domains will not be banned.</label>
+          <div id="domainsChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:28px"></div>
+          <div style="display:flex;gap:8px">
+            <input id="cfgDomainInput" type="text" placeholder="e.g. mynas.local" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();addTrustedDomain();}">
+            <button type="button" class="btn btn-primary btn-sm" onclick="addTrustedDomain()">+ Add</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- CrowdSec Bouncer -->
+      <div class="field-group" style="grid-column: 1 / -1">
+        <h3>CrowdSec Bouncer</h3>
+        <div class="form-row">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <label class="toggle" style="margin:0"><input id="cfgCrowdsecEnabled" type="checkbox" onchange="toggleCrowdsecFields()"><span class="slider"></span></label>
+            <span>Submit bans to CrowdSec LAPI</span>
+          </label>
+          <div class="hint">When enabled, banned IPs are also submitted to a local CrowdSec instance as ban decisions.</div>
+        </div>
+        <div id="crowdsecFields" style="display:none">
+          <div class="form-row">
+            <label>CrowdSec LAPI URL</label>
+            <input id="cfgCrowdsecUrl" type="text" placeholder="http://a0d7b954_crowdsec:8080">
+            <div class="hint">URL of the CrowdSec Local API (usually the CrowdSec addon container hostname).</div>
+          </div>
+          <div class="form-row">
+            <label>Bouncer API Key</label>
+            <input id="cfgCrowdsecKey" type="password" placeholder="your-bouncer-api-key">
+            <div class="hint">Generate with: <code>cscli bouncers add ha-guardian</code> in the CrowdSec addon.</div>
+          </div>
+          <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="testCrowdsec()">Test Connection</button>
+            <span id="crowdsecTestResult" style="font-size:12px"></span>
+          </div>
         </div>
       </div>
     </div>
@@ -773,7 +804,7 @@ async function loadDashboard(showSpinner = false) {
       <td style="font-size:12px">${sourcesHtml}</td>
       <td>${e.count}</td>
       <td>${statusBadge}</td>
-      <td><code style="font-size:10px;color:var(--text-muted);word-break:break-all;white-space:pre-wrap;max-width:300px;display:inline-block;overflow:hidden;text-overflow:ellipsis">${esc(e.line || e.url || '–')}</code></td>
+      <td>${[...( e._patterns || (e.pattern ? new Set([e.pattern]) : new Set()))].map(p => `<span class="badge badge-muted" style="font-size:10px;font-family:monospace">${esc(p)}</span>`).join(' ')}</td>
       <td>${detailsBtn}</td>
     </tr>`;
     }).join('');
@@ -884,7 +915,7 @@ async function loadSources(showSpinner = false) {
           <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
           <td class="countdown">–</td>
           <td style="font-size:12px">–</td>
-          <td></td>
+          <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource('addon:${aid}', ${JSON.stringify(esc(a.name))}, false)">Remove</button></td>
         </tr>`);
         firstRow = false;
       }
@@ -900,7 +931,7 @@ async function loadSources(showSpinner = false) {
             <td class="health-cell" data-addon="${aid}" data-file="${esc(f.name)}"><span class="badge badge-muted">–</span></td>
             <td class="countdown">${f.last_modified ? relTime(f.last_modified) : '–'}</td>
             <td style="font-size:12px">${f.size ? fmtSize(f.size) : '–'}</td>
-            <td></td>
+            <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource('${esc(sid)}', ${JSON.stringify(esc(f.name))}, ${!!f.path})">Delete</button></td>
           </tr>`);
           firstRow = false;
         });
@@ -915,7 +946,7 @@ async function loadSources(showSpinner = false) {
           <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
           <td class="countdown">–</td>
           <td style="font-size:12px">–</td>
-          <td></td>
+          <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource('${aid}', ${JSON.stringify(esc(a.name))}, false)">Remove</button></td>
         </tr>`);
       }
     });
@@ -926,6 +957,16 @@ async function loadSources(showSpinner = false) {
 async function toggleAddon(id, enabled) {
   try { await api('POST', 'api/addons/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' monitoring', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
+}
+async function deleteSource(id, name, hasFile) {
+  const fileMsg = hasFile ? '\n\n⚠️ WARNING: The log file on disk will also be permanently deleted!' : '';
+  const msg = 'Remove source "' + name + '" from Guardian?' + fileMsg + '\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
+  try {
+    await api('DELETE', 'api/sources/' + encodeURIComponent(id) + (hasFile ? '?delete_file=true' : ''));
+    toast('Source removed: ' + name, 'ok');
+    loadSources();
+  } catch (e) { toast('Error: ' + e.message, 'err'); }
 }
 async function addCustomSource() {
   const path = document.getElementById('customSourcePath').value.trim();
@@ -1093,7 +1134,11 @@ async function loadSettings() {
     document.getElementById('cfgScanInterval').value = c.scan_interval_seconds || 1;
     document.getElementById('cfgAddonPoll').value = c.addon_poll_interval || 15;
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
-    document.getElementById('cfgDomains').value = (c.trusted_domains || []).join(', ');
+    _renderDomainChips(c.trusted_domains || []);
+    document.getElementById('cfgCrowdsecEnabled').checked = !!c.crowdsec_enabled;
+    document.getElementById('cfgCrowdsecUrl').value = c.crowdsec_lapi_url || '';
+    document.getElementById('cfgCrowdsecKey').value = c.crowdsec_lapi_key || '';
+    toggleCrowdsecFields();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
   // Also load system/firewall status
   loadSystemStatus();
@@ -1185,7 +1230,6 @@ async function restartAddon() {
 async function saveSettings(ev) {
   ev.preventDefault();
   try {
-    const domains = document.getElementById('cfgDomains').value.split(',').map(s => s.trim()).filter(Boolean);
     await api('POST', 'api/config', {
       max_attempts: parseInt(document.getElementById('cfgMaxAttempts').value),
       window_minutes: parseInt(document.getElementById('cfgWindow').value),
@@ -1194,10 +1238,63 @@ async function saveSettings(ev) {
       scan_interval_seconds: parseInt(document.getElementById('cfgScanInterval').value),
       addon_poll_interval: parseInt(document.getElementById('cfgAddonPoll').value),
       log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
-      trusted_domains: domains,
+      trusted_domains: _getCurrentDomains(),
+      crowdsec_enabled: document.getElementById('cfgCrowdsecEnabled').checked,
+      crowdsec_lapi_url: document.getElementById('cfgCrowdsecUrl').value.trim(),
+      crowdsec_lapi_key: document.getElementById('cfgCrowdsecKey').value.trim(),
     });
     toast('Settings saved', 'ok'); loadStats(); loadSettings();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+// ---- Trusted Domains ----
+function _getCurrentDomains() {
+  return [...document.getElementById('domainsChips').querySelectorAll('[data-domain]')]
+    .map(el => el.dataset.domain);
+}
+function _renderDomainChips(domains) {
+  document.getElementById('domainsChips').innerHTML = (domains || []).map(d =>
+    `<span data-domain="${esc(d)}" style="background:var(--surface2);border:1px solid var(--border);padding:3px 10px 3px 10px;border-radius:20px;font-size:12px;display:inline-flex;align-items:center;gap:6px">
+      ${esc(d)}
+      <button type="button" onclick="removeTrustedDomain('${esc(d)}')" title="Remove" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:15px;line-height:1;padding:0;margin-left:2px">&times;</button>
+    </span>`
+  ).join('');
+}
+async function addTrustedDomain() {
+  const input = document.getElementById('cfgDomainInput');
+  const val = input.value.trim();
+  if (!val) return;
+  const current = _getCurrentDomains();
+  if (current.includes(val)) { toast(val + ' already in list', 'err'); return; }
+  current.push(val);
+  await api('POST', 'api/config', { trusted_domains: current });
+  _renderDomainChips(current);
+  input.value = '';
+  toast('Domain added', 'ok');
+}
+async function removeTrustedDomain(domain) {
+  const current = _getCurrentDomains().filter(d => d !== domain);
+  await api('POST', 'api/config', { trusted_domains: current });
+  _renderDomainChips(current);
+  toast('Domain removed', 'ok');
+}
+
+// ---- CrowdSec ----
+function toggleCrowdsecFields() {
+  const enabled = document.getElementById('cfgCrowdsecEnabled').checked;
+  document.getElementById('crowdsecFields').style.display = enabled ? '' : 'none';
+}
+async function testCrowdsec() {
+  const url = document.getElementById('cfgCrowdsecUrl').value.trim();
+  const key = document.getElementById('cfgCrowdsecKey').value.trim();
+  const res = document.getElementById('crowdsecTestResult');
+  if (!url || !key) { res.textContent = '⚠ Enter URL and API key first'; res.style.color = 'var(--warn)'; return; }
+  res.textContent = 'Testing…'; res.style.color = 'var(--text-muted)';
+  try {
+    const data = await api('POST', 'api/crowdsec/test', { url, key });
+    if (data.ok) { res.textContent = '✓ Connected — CrowdSec LAPI reachable'; res.style.color = 'var(--success)'; }
+    else { res.textContent = '✗ ' + (data.error || 'Connection failed'); res.style.color = 'var(--danger)'; }
+  } catch (e) { res.textContent = '✗ ' + e.message; res.style.color = 'var(--danger)'; }
 }
 
 // ---- Log Preview ----
