@@ -132,7 +132,6 @@ Da der gesamte Addon-Traffic über den HA-internen Proxy (`172.30.32.1`) läuft,
 | **DokuWiki** | `Docker: DokuWiki` + ggf. `auth.log`-Datei | DokuWiki schreibt Fehllogins in `data/log/auth.log` (Datei per File Search finden) |
 | **Nextcloud** | `Docker: Nextcloud` | Nextcloud loggt Fehllogins in stdout |
 | **Webtrees** | NPM | Webtrees gibt bei Fehllogin HTTP 200 zurück; NPM-Pattern erkennt den Login-Redirect |
-| **SnappyMail** | ❌ Nicht unterstützt | SnappyMail gibt bei Fehllogin HTTP 200 ohne erkennbares Merkmal |
 | **SSH** | Datei: `/config/home-assistant.log` | SSH-Muster sind in den Standardregeln enthalten |
 
 > **Faustregel:** Wenn ein Addon seinen Docker-Log nur mit `172.30.32.1` befüllt → NPM aktivieren statt (oder zusätzlich zu) dem Docker-Log des Addons.
@@ -240,7 +239,7 @@ Zeigt alle erkannten Login-Fehlversuche im konfigurierten Zeitfenster.
 - **Unban** – hebt die Sperre sofort auf
 - **Ban IP** – manuelle Sperre mit optionaler Dauer und Begründung
 
-> Home Assistant überwacht `ip_bans.yaml` auf Änderungen und wendet neue Bans **in Echtzeit** an. Ein Neustart ist nicht erforderlich.
+> Home Assistant liest `ip_bans.yaml` beim Neustart ein und banned die eingetragenen IP's.
 
 ---
 
