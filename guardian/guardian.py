@@ -2,7 +2,6 @@
 """HA Guardian - Brute-Force Protection for Home Assistant (Multi-Source)"""
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -28,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.22.3"
+VERSION = "1.22.4"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -479,9 +478,6 @@ class Config:
         self.addon_poll_interval: int = 15
         self.log_interval_minutes: int = 5
         self.log_file: str = LOG_FILE_DEFAULT
-        self.crowdsec_enabled: bool = False
-        self.crowdsec_container: str = "addon_424ccef4_crowdsec"
-        self.crowdsec_config: str = "/config/.storage/crowdsec/config/config.yaml"
         self._load()
 
     def _load(self):
@@ -528,12 +524,6 @@ class Config:
             self.addon_poll_interval = max(5, int(ov["addon_poll_interval"]))
         if "log_interval_minutes" in ov:
             self.log_interval_minutes = max(1, int(ov["log_interval_minutes"]))
-        if "crowdsec_enabled" in ov:
-            self.crowdsec_enabled = bool(ov["crowdsec_enabled"])
-        if "crowdsec_container" in ov:
-            self.crowdsec_container = str(ov["crowdsec_container"])
-        if "crowdsec_config" in ov:
-            self.crowdsec_config = str(ov["crowdsec_config"])
 
     # HA internal networks that should never be banned
     HA_DEFAULT_WHITELIST = [
@@ -578,9 +568,6 @@ class Config:
         self._state.set_override("scan_interval_seconds", self.scan_interval_seconds)
         self._state.set_override("addon_poll_interval", self.addon_poll_interval)
         self._state.set_override("log_interval_minutes", self.log_interval_minutes)
-        self._state.set_override("crowdsec_enabled", self.crowdsec_enabled)
-        self._state.set_override("crowdsec_container", self.crowdsec_container)
-        self._state.set_override("crowdsec_config", self.crowdsec_config)
         # Whitelist and trusted_domains are auto-saved via property setters
 
     def to_dict(self) -> dict:
@@ -595,9 +582,6 @@ class Config:
             "log_file": self.log_file,
             "whitelist": self.whitelist,
             "trusted_domains": self.trusted_domains,
-            "crowdsec_enabled": self.crowdsec_enabled,
-            "crowdsec_container": self.crowdsec_container,
-            "crowdsec_config": self.crowdsec_config,
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -1647,39 +1631,7 @@ class BanManager:
             await self._flush()
         self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
-        # Submit to CrowdSec via docker exec cscli decisions add (non-blocking)
-        if self.config.crowdsec_enabled and self.config.crowdsec_container:
-            asyncio.ensure_future(self._crowdsec_submit(ip, dur))
         return True
-
-    async def _crowdsec_submit(self, ip: str, duration_minutes: int):
-        """Add a ban decision to CrowdSec via docker exec cscli decisions add.
-        This avoids LAPI authentication entirely — cscli has direct DB access."""
-        container = self.config.crowdsec_container
-        cfg = self.config.crowdsec_config
-        dur_str = f"{duration_minutes}m"
-        cmd = [
-            "docker", "exec", container,
-            "cscli", "--config", cfg,
-            "decisions", "add",
-            "--ip", ip,
-            "--duration", dur_str,
-            "--reason", "ha-guardian/brute-force",
-            "--type", "ban",
-        ]
-        try:
-            loop = asyncio.get_event_loop()
-            r = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(cmd, capture_output=True, timeout=10)
-            )
-            if r.returncode == 0:
-                log.info("CrowdSec: added decision for %s (%s)", ip, dur_str)
-            else:
-                err = r.stderr.decode(errors="replace").strip()
-                log.warning("CrowdSec: cscli failed for %s: %s", ip, err)
-        except Exception as e:
-            log.warning("CrowdSec: could not add decision for %s: %s", ip, e)
 
     def get_evidence(self, ip: str) -> list:
         return self._evidence.get(ip, [])
@@ -2317,12 +2269,6 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.log_interval_minutes = max(1, int(d["log_interval_minutes"]))
         if "trusted_domains" in d:
             config.trusted_domains = [s.strip() for s in d["trusted_domains"] if s.strip()]
-        if "crowdsec_enabled" in d:
-            config.crowdsec_enabled = bool(d["crowdsec_enabled"])
-        if "crowdsec_container" in d:
-            config.crowdsec_container = str(d["crowdsec_container"]).strip()
-        if "crowdsec_config" in d:
-            config.crowdsec_config = str(d["crowdsec_config"]).strip()
         config.save()
         return web.json_response({"ok": True})
 
@@ -2733,26 +2679,6 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return web.json_response({"ok": True})
         return web.json_response({"ok": False, "error": "source not found"}, status=404)
 
-    async def handle_crowdsec_test(req):
-        """Test CrowdSec integration by running: docker exec <container> cscli version"""
-        try:
-            d = await req.json()
-            container = d.get("container", "").strip()
-            cfg = d.get("config", "").strip()
-            if not container:
-                return web.json_response({"ok": False, "error": "container name required"}, status=400)
-            cmd = ["docker", "exec", container, "cscli", "--config", cfg, "version"]
-            loop = asyncio.get_event_loop()
-            r = await loop.run_in_executor(
-                None, lambda: subprocess.run(cmd, capture_output=True, timeout=10)
-            )
-            if r.returncode == 0:
-                out = r.stdout.decode(errors="replace").strip()
-                return web.json_response({"ok": True, "version": out})
-            err = r.stderr.decode(errors="replace").strip()
-            return web.json_response({"ok": False, "error": err or "cscli returned non-zero"})
-        except Exception as e:
-            return web.json_response({"ok": False, "error": str(e)})
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/stats", handle_stats)
@@ -2797,7 +2723,6 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/rules/test", handle_test_rule)
     app.router.add_get("/api/events/{ip}", handle_ip_events)
     app.router.add_post("/api/rules/generate", handle_generate_regex)
-    app.router.add_post("/api/crowdsec/test", handle_crowdsec_test)
 
     return app
 

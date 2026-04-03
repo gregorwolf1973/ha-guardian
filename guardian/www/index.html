@@ -464,33 +464,6 @@
         </div>
       </div>
 
-      <!-- CrowdSec Bouncer -->
-      <div class="field-group" style="grid-column: 1 / -1">
-        <h3>CrowdSec Bouncer</h3>
-        <div class="form-row">
-          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-            <label class="toggle" style="margin:0"><input id="cfgCrowdsecEnabled" type="checkbox" onchange="toggleCrowdsecFields()"><span class="slider"></span></label>
-            <span>Submit bans to CrowdSec LAPI</span>
-          </label>
-          <div class="hint">When enabled, banned IPs are also submitted to a local CrowdSec instance as ban decisions.</div>
-        </div>
-        <div id="crowdsecFields" style="display:none">
-          <div class="form-row">
-            <label>CrowdSec Container Name</label>
-            <input id="cfgCrowdsecContainer" type="text" placeholder="addon_424ccef4_crowdsec">
-            <div class="hint">Find with: <code>docker ps | grep crowdsec</code></div>
-          </div>
-          <div class="form-row">
-            <label>CrowdSec Config Path</label>
-            <input id="cfgCrowdsecConfig" type="text" placeholder="/config/.storage/crowdsec/config/config.yaml">
-            <div class="hint">Path to config.yaml inside the CrowdSec container.</div>
-          </div>
-          <div class="form-row" style="flex-direction:row;align-items:center;gap:10px">
-            <button type="button" class="btn btn-ghost btn-sm" onclick="testCrowdsec()">Test Connection</button>
-            <span id="crowdsecTestResult" style="font-size:12px"></span>
-          </div>
-        </div>
-      </div>
     </div>
     <div class="save-row">
       <button class="btn btn-primary" type="submit">Save Settings</button>
@@ -915,7 +888,7 @@ async function loadSources(showSpinner = false) {
           <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
           <td class="countdown">–</td>
           <td style="font-size:12px">–</td>
-          <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource('addon:${aid}', ${JSON.stringify(esc(a.name))}, false)">Remove</button></td>
+          <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource(this)" data-sid="addon:${aid}" data-name="${esc(a.name)}" data-delfile="false">Remove</button></td>
         </tr>`);
         firstRow = false;
       }
@@ -924,6 +897,7 @@ async function loadSources(showSpinner = false) {
         a.files.forEach(f => {
           const sid = f.source_id || ('file:' + f.path);
           const manualBadge = f.manual ? ' <span style="font-size:9px;color:var(--primary)">[manual]</span>' : '';
+          const delFile = !!f.manual;  // only delete file for manually-added sources
           rows.push(`<tr${rowStyle} data-addon-id="${aid}">
             ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + '</td>' : ''}
             <td style="font-size:12px"><span title="${esc(f.path)}" style="cursor:help;border-bottom:1px dotted var(--text-muted)">${esc(f.name)}</span>${manualBadge} <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource('${esc(sid)}')">Preview</button> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" title="Reassign to different addon" onclick="reassignSource('${esc(sid)}','${esc(f.name)}')">&#8644;</button></td>
@@ -931,7 +905,7 @@ async function loadSources(showSpinner = false) {
             <td class="health-cell" data-addon="${aid}" data-file="${esc(f.name)}"><span class="badge badge-muted">–</span></td>
             <td class="countdown">${f.last_modified ? relTime(f.last_modified) : '–'}</td>
             <td style="font-size:12px">${f.size ? fmtSize(f.size) : '–'}</td>
-            <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource('${esc(sid)}', ${JSON.stringify(esc(f.name))}, ${!!f.path})">Delete</button></td>
+            <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource(this)" data-sid="${esc(sid)}" data-name="${esc(f.name)}" data-delfile="${delFile}">${delFile ? 'Delete' : 'Remove'}</button></td>
           </tr>`);
           firstRow = false;
         });
@@ -946,7 +920,7 @@ async function loadSources(showSpinner = false) {
           <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
           <td class="countdown">–</td>
           <td style="font-size:12px">–</td>
-          <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource('${aid}', ${JSON.stringify(esc(a.name))}, false)">Remove</button></td>
+          <td><button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:10px" onclick="deleteSource(this)" data-sid="${aid}" data-name="${esc(a.name)}" data-delfile="false">Remove</button></td>
         </tr>`);
       }
     });
@@ -958,7 +932,10 @@ async function toggleAddon(id, enabled) {
   try { await api('POST', 'api/addons/toggle', { id, enabled }); toast((enabled ? 'Enabled' : 'Disabled') + ' monitoring', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
 }
-async function deleteSource(id, name, hasFile) {
+async function deleteSource(btn) {
+  const id = btn.dataset.sid;
+  const name = btn.dataset.name;
+  const hasFile = btn.dataset.delfile === 'true';
   const fileMsg = hasFile ? '\n\n⚠️ WARNING: The log file on disk will also be permanently deleted!' : '';
   const msg = 'Remove source "' + name + '" from Guardian?' + fileMsg + '\n\nThis cannot be undone.';
   if (!confirm(msg)) return;
@@ -1135,10 +1112,6 @@ async function loadSettings() {
     document.getElementById('cfgAddonPoll').value = c.addon_poll_interval || 15;
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     _renderDomainChips(c.trusted_domains || []);
-    document.getElementById('cfgCrowdsecEnabled').checked = !!c.crowdsec_enabled;
-    document.getElementById('cfgCrowdsecContainer').value = c.crowdsec_container || '';
-    document.getElementById('cfgCrowdsecConfig').value = c.crowdsec_config || '';
-    toggleCrowdsecFields();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
   // Also load system/firewall status
   loadSystemStatus();
@@ -1239,9 +1212,6 @@ async function saveSettings(ev) {
       addon_poll_interval: parseInt(document.getElementById('cfgAddonPoll').value),
       log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
       trusted_domains: _getCurrentDomains(),
-      crowdsec_enabled: document.getElementById('cfgCrowdsecEnabled').checked,
-      crowdsec_container: document.getElementById('cfgCrowdsecContainer').value.trim(),
-      crowdsec_config: document.getElementById('cfgCrowdsecConfig').value.trim(),
     });
     toast('Settings saved', 'ok'); loadStats(); loadSettings();
   } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -1279,23 +1249,6 @@ async function removeTrustedDomain(domain) {
   toast('Domain removed', 'ok');
 }
 
-// ---- CrowdSec ----
-function toggleCrowdsecFields() {
-  const enabled = document.getElementById('cfgCrowdsecEnabled').checked;
-  document.getElementById('crowdsecFields').style.display = enabled ? '' : 'none';
-}
-async function testCrowdsec() {
-  const container = document.getElementById('cfgCrowdsecContainer').value.trim();
-  const config = document.getElementById('cfgCrowdsecConfig').value.trim();
-  const res = document.getElementById('crowdsecTestResult');
-  if (!container) { res.textContent = '⚠ Enter container name first'; res.style.color = 'var(--warn)'; return; }
-  res.textContent = 'Testing…'; res.style.color = 'var(--text-muted)';
-  try {
-    const data = await api('POST', 'api/crowdsec/test', { container, config });
-    if (data.ok) { res.textContent = '✓ cscli reachable — ' + (data.version || 'OK'); res.style.color = 'var(--success)'; }
-    else { res.textContent = '✗ ' + (data.error || 'Failed'); res.style.color = 'var(--danger)'; }
-  } catch (e) { res.textContent = '✗ ' + e.message; res.style.color = 'var(--danger)'; }
-}
 
 // ---- Log Preview ----
 async function previewSource(id, name) {

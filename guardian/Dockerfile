@@ -7,8 +7,7 @@ RUN apk add --no-cache \
         py3-yaml \
         iptables \
         ip6tables \
-        nftables \
-        docker-cli && \
+        nftables && \
     pip3 install --no-cache-dir --break-system-packages \
         aiohttp \
         pyyaml || true
