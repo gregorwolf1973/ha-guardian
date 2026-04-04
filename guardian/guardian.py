@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.0"
+VERSION = "1.24.1"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -752,6 +752,9 @@ class CrowdSecManager:
     async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
         """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
         if not self.enabled:
+            log.debug("CrowdSec: submit_ban skipped — not enabled (enabled=%s, url=%s, id=%s, pw=%s)",
+                      self._state.crowdsec_enabled, bool(self._state.crowdsec_lapi_url),
+                      bool(self._state.crowdsec_machine_id), bool(self._state.crowdsec_machine_password))
             return
         url = self._state.crowdsec_lapi_url.rstrip("/")
         payload = self._build_alert_payload(ip, duration_minutes, reason)
@@ -776,6 +779,38 @@ class CrowdSecManager:
             log.info("CrowdSec: decision submitted for %s (JWT mode)", ip)
         else:
             log.warning("CrowdSec: submit failed for %s (%d): %s", ip, status, body[:200])
+
+    async def delete_ban(self, ip: str):
+        """Remove all CrowdSec decisions for an IP (best-effort, non-blocking)."""
+        if not self.enabled:
+            return
+        url = self._state.crowdsec_lapi_url.rstrip("/")
+        endpoint = f"{url}/v1/decisions?ip={ip}"
+
+        # Try trusted-IP mode first
+        status, body = await asyncio.to_thread(
+            self._http_request, endpoint, "DELETE", None, {}
+        )
+        if status in (200, 201):
+            log.info("CrowdSec: decisions deleted for %s (trusted-IP mode)", ip)
+            return
+        log.debug("CrowdSec: trusted-IP DELETE failed (%d) — %s", status, body[:100])
+
+        # Fall back to JWT
+        async with self._lock:
+            now = datetime.now(timezone.utc)
+            if not (self._jwt and self._jwt_expires and now < self._jwt_expires):
+                self._jwt, _ = await self._login()
+        if not self._jwt:
+            return
+        status, body = await asyncio.to_thread(
+            self._http_request, endpoint, "DELETE", None,
+            {"Authorization": f"Bearer {self._jwt}"}
+        )
+        if status in (200, 201):
+            log.info("CrowdSec: decisions deleted for %s (JWT mode)", ip)
+        else:
+            log.warning("CrowdSec: DELETE failed for %s (%d): %s", ip, status, body[:200])
 
     async def _login(self, url: str = None, machine_id: str = None, password: str = None) -> tuple:
         """Returns (token_or_None, error_str_or_None). Uses urllib (stdlib)."""
@@ -1878,6 +1913,8 @@ class BanManager:
             await self._flush()
         self._fw_unban(ip)
         log.info("Unbanned %s", ip)
+        if self._crowdsec:
+            asyncio.create_task(self._crowdsec.delete_ban(ip))
         return True
 
     def is_banned(self, ip: str) -> bool:
