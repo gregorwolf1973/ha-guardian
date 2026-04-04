@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.1"
+VERSION = "1.24.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -749,23 +749,25 @@ class CrowdSecManager:
         )
         return status in (200, 201), status, body
 
-    async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
-        """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
+    async def submit_ban(self, ip: str, duration_minutes: int, reason: str) -> dict:
+        """Submit a ban decision to CrowdSec. Returns result dict."""
         if not self.enabled:
-            log.debug("CrowdSec: submit_ban skipped — not enabled (enabled=%s, url=%s, id=%s, pw=%s)",
-                      self._state.crowdsec_enabled, bool(self._state.crowdsec_lapi_url),
-                      bool(self._state.crowdsec_machine_id), bool(self._state.crowdsec_machine_password))
-            return
+            msg = (f"skipped — not enabled (enabled={self._state.crowdsec_enabled}, "
+                   f"url={bool(self._state.crowdsec_lapi_url)}, "
+                   f"id={bool(self._state.crowdsec_machine_id)}, "
+                   f"pw={bool(self._state.crowdsec_machine_password)})")
+            log.info("CrowdSec: submit_ban %s", msg)
+            return {"ok": False, "error": msg}
         url = self._state.crowdsec_lapi_url.rstrip("/")
         payload = self._build_alert_payload(ip, duration_minutes, reason)
+        log.info("CrowdSec: submitting ban for %s to %s", ip, url)
 
-        # Try trusted-IP mode first (no auth — CrowdSec grants admin access
-        # to 172.30.32.0/23 via trusted_ips config)
+        # Try trusted-IP mode first (no auth)
         ok, status, body = await self._post_alert(url, payload, {})
         if ok:
             log.info("CrowdSec: decision submitted for %s (trusted-IP mode)", ip)
-            return
-        log.debug("CrowdSec: trusted-IP mode failed (%d) — %s", status, body[:100])
+            return {"ok": True, "mode": "trusted-ip"}
+        log.info("CrowdSec: trusted-IP mode failed (%d) — %s", status, body[:200])
 
         # Fall back to machine login + JWT
         async with self._lock:
@@ -773,19 +775,23 @@ class CrowdSecManager:
             if not (self._jwt and self._jwt_expires and now < self._jwt_expires):
                 self._jwt, _ = await self._login()
         if not self._jwt:
-            return
+            log.warning("CrowdSec: login failed — cannot submit ban for %s", ip)
+            return {"ok": False, "error": "login failed"}
         ok, status, body = await self._post_alert(url, payload, {"Authorization": f"Bearer {self._jwt}"})
         if ok:
             log.info("CrowdSec: decision submitted for %s (JWT mode)", ip)
-        else:
-            log.warning("CrowdSec: submit failed for %s (%d): %s", ip, status, body[:200])
+            return {"ok": True, "mode": "jwt"}
+        log.warning("CrowdSec: submit failed for %s (%d): %s", ip, status, body[:200])
+        return {"ok": False, "error": f"HTTP {status}: {body[:200]}"}
 
-    async def delete_ban(self, ip: str):
-        """Remove all CrowdSec decisions for an IP (best-effort, non-blocking)."""
+    async def delete_ban(self, ip: str) -> dict:
+        """Remove all CrowdSec decisions for an IP. Returns result dict."""
         if not self.enabled:
-            return
+            log.info("CrowdSec: delete_ban skipped — not enabled")
+            return {"ok": False, "error": "not enabled"}
         url = self._state.crowdsec_lapi_url.rstrip("/")
         endpoint = f"{url}/v1/decisions?ip={ip}"
+        log.info("CrowdSec: deleting decisions for %s", ip)
 
         # Try trusted-IP mode first
         status, body = await asyncio.to_thread(
@@ -793,8 +799,8 @@ class CrowdSecManager:
         )
         if status in (200, 201):
             log.info("CrowdSec: decisions deleted for %s (trusted-IP mode)", ip)
-            return
-        log.debug("CrowdSec: trusted-IP DELETE failed (%d) — %s", status, body[:100])
+            return {"ok": True, "mode": "trusted-ip"}
+        log.info("CrowdSec: trusted-IP DELETE failed (%d) — %s", status, body[:200])
 
         # Fall back to JWT
         async with self._lock:
@@ -802,15 +808,17 @@ class CrowdSecManager:
             if not (self._jwt and self._jwt_expires and now < self._jwt_expires):
                 self._jwt, _ = await self._login()
         if not self._jwt:
-            return
+            log.warning("CrowdSec: login failed — cannot delete decisions for %s", ip)
+            return {"ok": False, "error": "login failed"}
         status, body = await asyncio.to_thread(
             self._http_request, endpoint, "DELETE", None,
             {"Authorization": f"Bearer {self._jwt}"}
         )
         if status in (200, 201):
             log.info("CrowdSec: decisions deleted for %s (JWT mode)", ip)
-        else:
-            log.warning("CrowdSec: DELETE failed for %s (%d): %s", ip, status, body[:200])
+            return {"ok": True, "mode": "jwt"}
+        log.warning("CrowdSec: DELETE failed for %s (%d): %s", ip, status, body[:200])
+        return {"ok": False, "error": f"HTTP {status}: {body[:200]}"}
 
     async def _login(self, url: str = None, machine_id: str = None, password: str = None) -> tuple:
         """Returns (token_or_None, error_str_or_None). Uses urllib (stdlib)."""
@@ -1875,7 +1883,8 @@ class BanManager:
             log.error("Error writing ip_bans.yaml: %s", e)
 
     async def ban(self, ip, reason="auto", manual=False, attempts=0,
-                  duration_minutes=None, source="", evidence=None) -> bool:
+                  duration_minutes=None, source="", evidence=None,
+                  skip_crowdsec=False) -> bool:
         if self.config.is_whitelisted(ip):
             log.debug("IP %s is whitelisted — skipping ban", ip)
             return False
@@ -1897,14 +1906,14 @@ class BanManager:
             await self._flush()
         self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
-        if self._crowdsec:
+        if self._crowdsec and not skip_crowdsec:
             asyncio.create_task(self._crowdsec.submit_ban(ip, dur, reason))
         return True
 
     def get_evidence(self, ip: str) -> list:
         return self._evidence.get(ip, [])
 
-    async def unban(self, ip: str) -> bool:
+    async def unban(self, ip: str, skip_crowdsec: bool = False) -> bool:
         async with self._lock:
             if ip not in self._bans:
                 return False
@@ -1913,7 +1922,7 @@ class BanManager:
             await self._flush()
         self._fw_unban(ip)
         log.info("Unbanned %s", ip)
-        if self._crowdsec:
+        if self._crowdsec and not skip_crowdsec:
             asyncio.create_task(self._crowdsec.delete_ban(ip))
         return True
 
@@ -2403,20 +2412,28 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             ip_address(ip)
             dur = int(d.get("duration_minutes", config.ban_duration_minutes))
             reason = d.get("reason", "manual") or "manual"
-            ok = await bans.ban(ip, reason=reason, manual=True, duration_minutes=dur)
+            ok = await bans.ban(ip, reason=reason, manual=True, duration_minutes=dur,
+                               skip_crowdsec=True)
             if ok:
-                return web.json_response({"ok": True})
+                # Await CrowdSec directly so we can return its result
+                cs_result = None
+                if crowdsec_mgr:
+                    cs_result = await crowdsec_mgr.submit_ban(ip, dur, reason)
+                return web.json_response({"ok": True, "crowdsec": cs_result})
             return web.json_response({"ok": False, "error": "IP is whitelisted"}, status=400)
         except (ValueError, TypeError) as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
 
     async def handle_delete_ban(req):
         ip = req.match_info["ip"]
-        ok = await bans.unban(ip)
+        ok = await bans.unban(ip, skip_crowdsec=True)
         if ok:
             # Clear the detector window so counter restarts from 0
             detector.clear_window(ip)
-            return web.json_response({"ok": True})
+            cs_result = None
+            if crowdsec_mgr:
+                cs_result = await crowdsec_mgr.delete_ban(ip)
+            return web.json_response({"ok": True, "crowdsec": cs_result})
         return web.json_response({"ok": False, "error": "not found"}, status=404)
 
     async def handle_get_whitelist(req):

@@ -879,13 +879,19 @@ async function addBan() {
   if (!ip) { toast('Enter an IP address', 'err'); return; }
   try {
     const body = { ip, reason }; if (dur) body.duration_minutes = dur;
-    await api('POST', 'api/bans', body);
-    toast(ip + ' banned', 'ok'); document.getElementById('banIp').value = ''; loadBans();
+    const r = await api('POST', 'api/bans', body);
+    let msg = ip + ' banned';
+    if (r.crowdsec) msg += r.crowdsec.ok ? ' + CrowdSec ✓' : ' (CrowdSec: ' + r.crowdsec.error + ')';
+    toast(msg, 'ok'); document.getElementById('banIp').value = ''; loadBans();
   } catch (e) { toast(e.message, 'err'); }
 }
 async function unbanIP(ip) {
-  try { await api('DELETE', 'api/bans/' + encodeURIComponent(ip)); toast(ip + ' unbanned', 'ok'); loadBans(); }
-  catch (e) { toast(e.message, 'err'); }
+  try {
+    const r = await api('DELETE', 'api/bans/' + encodeURIComponent(ip));
+    let msg = ip + ' unbanned';
+    if (r.crowdsec) msg += r.crowdsec.ok ? ' + CrowdSec ✓' : ' (CrowdSec: ' + r.crowdsec.error + ')';
+    toast(msg, 'ok'); loadBans();
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 // ---- Addons ----
