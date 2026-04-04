@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.4"
+VERSION = "1.24.5"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -709,7 +709,7 @@ class CrowdSecManager:
     @property
     def enabled(self) -> bool:
         return (
-            self._state.crowdsec_enabled
+            self._state.ban_to_crowdsec
             and bool(self._state.crowdsec_lapi_url)
             and bool(self._state.crowdsec_machine_id)
             and bool(self._state.crowdsec_machine_password)
@@ -717,10 +717,14 @@ class CrowdSecManager:
 
     def _build_alert_payload(self, ip: str, duration_minutes: int, reason: str) -> list:
         now = datetime.now(timezone.utc)
-        start_at  = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        stop_at   = start_at  # point event — decision.duration controls the ban length
+        start_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         # 0 = permanent in Guardian → 10 years in CrowdSec
-        duration_str = f"{duration_minutes}m" if duration_minutes > 0 else "87600h"
+        if duration_minutes > 0:
+            duration_str = f"{duration_minutes}m"
+            stop_at = (now + timedelta(minutes=duration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            duration_str = "87600h"
+            stop_at = (now + timedelta(hours=87600)).strftime("%Y-%m-%dT%H:%M:%SZ")
         return [{
             "message": reason,
             "events": [{"timestamp": start_at, "meta": [{"key": "source_ip", "value": ip}]}],
@@ -1419,6 +1423,8 @@ class SourceManager:
             if not g["name"]:
                 if addon_id == "__core__":
                     g["name"] = "Home Assistant Core"
+                elif addon_id == "__unused__":
+                    g["name"] = "Unused"
                 elif src.get("custom"):
                     g["name"] = Path(src.get("path", src["id"])).name
                 else:
@@ -1446,8 +1452,8 @@ class SourceManager:
                 "files": g.get("files", []),
             })
 
-        # Sort: enabled first, then by name
-        result.sort(key=lambda a: (not a["enabled"], a["name"].lower()))
+        # Sort: enabled first, then by name; __unused__ always last
+        result.sort(key=lambda a: (a["id"] == "__unused__", not a["enabled"], a["name"].lower()))
         return result
 
     def toggle_addon(self, addon_id: str, enabled: bool,
@@ -2791,6 +2797,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             return web.json_response({"ok": True})
         src["addon_slug"] = target_addon
         src["manual_addon_slug"] = True
+        # Special "unused" marker: disable the source so it's not scanned
+        if target_addon == "__unused__":
+            src["enabled"] = False
         source_mgr._save()
         log.info("Reassigned source %s → addon %s", source_id, target_addon)
         return web.json_response({"ok": True})

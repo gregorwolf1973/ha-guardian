@@ -487,12 +487,6 @@
           <code style="display:inline-block;background:var(--surface2);padding:2px 10px;border-radius:4px;font-family:monospace;margin:4px 0">cscli machines add ha-guardian --password YOUR_PASSWORD</code><br>
           Then enter the LAPI URL and credentials below. Guardian will submit a ban decision to CrowdSec every time it bans an IP.
         </div>
-        <div class="form-row" style="align-items:center;gap:8px">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="cfgCsEnabled" style="width:16px;height:16px">
-            Enable CrowdSec integration
-          </label>
-        </div>
         <div class="form-row">
           <label>LAPI URL</label>
           <input id="cfgCsUrl" type="text" placeholder="http://172.30.33.4:8080">
@@ -921,23 +915,29 @@ async function loadSources(showSpinner = false) {
     const rows = [];
     addons.forEach(a => {
       const isCustom = !!a.custom;
+      const isUnused = a.id === '__unused__';
       const aid = esc(a.id);
-      const stateLabel = isCustom
-        ? '<span class="badge badge-muted">Custom</span>'
-        : a.state === 'started'
-          ? '<span class="badge badge-success">Running</span>'
-          : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
-          : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
-      const rowStyle = isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
+      const stateLabel = isUnused
+        ? '<span class="badge badge-muted" title="These log files are ignored by Guardian">Unused</span>'
+        : isCustom
+          ? '<span class="badge badge-muted">Custom</span>'
+          : a.state === 'started'
+            ? '<span class="badge badge-success">Running</span>'
+            : a.state ? '<span class="badge badge-muted">' + esc(a.state) + '</span>'
+            : (a.id === '__core__' ? '<span class="badge badge-success">Core</span>' : '<span class="badge badge-muted">–</span>');
+      const rowStyle = isUnused
+        ? ' style="border-left:3px solid var(--text-muted);opacity:.7"'
+        : isCustom ? ' style="border-left:3px solid var(--primary)"' : '';
       // Count total sources for rowspan
       const srcCount = (a.docker_log ? 1 : 0) + (a.files ? a.files.length : 0);
       const totalRows = Math.max(srcCount, 1);
+      const toggleAttr = isUnused ? 'disabled title="Unused sources are always disabled"' : '';
       let firstRow = true;
       // Docker source row
       if (a.docker_log) {
         const dockerPath = '/addons/' + aid + '/logs';
         rows.push(`<tr${rowStyle} data-addon-id="${aid}">
-          ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + '</td>' : ''}
+          ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' ' + toggleAttr + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + (isUnused ? ' <span style="font-size:10px;color:var(--text-muted)">(ignored)</span>' : '') + '</td>' : ''}
           <td style="font-size:12px"><span title="Supervisor API: ${dockerPath}" style="cursor:help;border-bottom:1px dotted var(--text-muted)">Docker Log</span> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource('addon:${aid}')">Preview</button></td>
           <td>${stateLabel}</td>
           <td class="health-cell" data-addon="${aid}"><span class="badge badge-muted">–</span></td>
@@ -954,7 +954,7 @@ async function loadSources(showSpinner = false) {
           const manualBadge = f.manual ? ' <span style="font-size:9px;color:var(--primary)">[manual]</span>' : '';
           const delFile = !!f.manual;  // only delete file for manually-added sources
           rows.push(`<tr${rowStyle} data-addon-id="${aid}">
-            ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + '</td>' : ''}
+            ${firstRow ? '<td rowspan="' + totalRows + '"><label class="toggle"><input type="checkbox" ' + (a.enabled ? 'checked' : '') + ' ' + toggleAttr + ' onchange="toggleAddon(\'' + aid + '\', this.checked)"><span class="slider"></span></label></td><td rowspan="' + totalRows + '"><strong>' + esc(a.name) + '</strong>' + (isCustom ? ' <span style="font-size:10px;color:var(--primary)">custom</span>' : '') + (isUnused ? ' <span style="font-size:10px;color:var(--text-muted)">(ignored)</span>' : '') + '</td>' : ''}
             <td style="font-size:12px"><span title="${esc(f.path)}" style="cursor:help;border-bottom:1px dotted var(--text-muted)">${esc(f.name)}</span>${manualBadge} <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" onclick="previewSource('${esc(sid)}')">Preview</button> <button class="btn btn-ghost" style="padding:1px 4px;font-size:10px" title="Reassign to different addon" onclick="reassignSource('${esc(sid)}','${esc(f.name)}')">&#8644;</button></td>
             <td>${stateLabel}</td>
             <td class="health-cell" data-addon="${aid}" data-file="${esc(f.name)}"><span class="badge badge-muted">–</span></td>
@@ -968,7 +968,7 @@ async function loadSources(showSpinner = false) {
       // If no sources at all
       if (totalRows === 0 || (!a.docker_log && (!a.files || !a.files.length))) {
         rows.push(`<tr${rowStyle} data-addon-id="${aid}">
-          <td><label class="toggle"><input type="checkbox" ${a.enabled ? 'checked' : ''} onchange="toggleAddon('${aid}', this.checked)"><span class="slider"></span></label></td>
+          <td><label class="toggle"><input type="checkbox" ${a.enabled ? 'checked' : ''} ${isUnused ? 'disabled' : ''} onchange="toggleAddon('${aid}', this.checked)"><span class="slider"></span></label></td>
           <td><strong>${esc(a.name)}</strong></td>
           <td style="font-size:12px;color:var(--text-muted)">–</td>
           <td>${stateLabel}</td>
@@ -1091,7 +1091,8 @@ function reassignSource(sourceId, fileName) {
   _reassignSourceId = sourceId;
   document.getElementById('reassignFileName').textContent = fileName;
   const sel = document.getElementById('reassignSelect');
-  sel.innerHTML = '<option value="">(none — remove assignment)</option>';
+  sel.innerHTML = '<option value="">(none — remove assignment)</option>'
+    + '<option value="__unused__">— Unused (ignore this log file) —</option>';
   (window._addonsList || []).forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.id;
@@ -1171,7 +1172,6 @@ async function loadSettings() {
     document.getElementById('cfgBanIpbans').checked = c.ban_to_ipbans !== false;  // default true
     document.getElementById('cfgBanCrowdsec').checked = !!c.ban_to_crowdsec;
     // CrowdSec
-    document.getElementById('cfgCsEnabled').checked = !!c.crowdsec_enabled;
     document.getElementById('cfgCsUrl').value = c.crowdsec_lapi_url || '';
     document.getElementById('cfgCsMachineId').value = c.crowdsec_machine_id || '';
     document.getElementById('cfgCsPassword').value = '';  // never prefill
@@ -1280,7 +1280,6 @@ async function saveSettings(ev) {
       trusted_domains: _getCurrentDomains(),
       ban_to_ipbans: document.getElementById('cfgBanIpbans').checked,
       ban_to_crowdsec: document.getElementById('cfgBanCrowdsec').checked,
-      crowdsec_enabled: document.getElementById('cfgCsEnabled').checked,
       crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
       crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
     };
