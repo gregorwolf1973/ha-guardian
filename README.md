@@ -1,3 +1,5 @@
+🌐 **English** · [Deutsch](README.de.md)
+
 # HA Guardian
 
 <p align="center">
@@ -10,274 +12,352 @@
   </a>
 </p>
 
-**Brute-force-Schutz für Home Assistant** – überwacht Logs aller installierten Addons, erkennt fehlgeschlagene Anmeldeversuche und sperrt angreifende IPs automatisch.
+**Brute-force protection for Home Assistant** – monitors logs of all installed addons, detects failed login attempts and automatically bans attacking IPs via `ip_bans.yaml` (Application Layer) and optionally via **CrowdSec LAPI** (Network Layer).
 
 ---
 
-## Inhaltsverzeichnis
+## Table of Contents
 
-1. [Was macht HA Guardian?](#was-macht-ha-guardian)
-2. [Funktionen](#funktionen)
+1. [What does HA Guardian do?](#what-does-ha-guardian-do)
+2. [Features](#features)
 3. [Installation](#installation)
-4. [Schnellstart](#schnellstart)
-5. [Konfiguration](#konfiguration)
-6. [Addons-Tab – welche Log-Quellen aktivieren?](#addons-tab--welche-log-quellen-aktivieren)
-7. [Rules-Tab](#rules-tab)
-8. [Whitelist-Tab](#whitelist-tab)
-9. [Dashboard](#dashboard)
-10. [Blocked IPs](#blocked-ips)
-11. [Hinweise zur Architektur](#hinweise-zur-architektur)
-12. [Häufige Fragen](#häufige-fragen)
+4. [Quick Start](#quick-start)
+5. [Configuration](#configuration)
+6. [Ban Targets](#ban-targets)
+7. [CrowdSec Integration](#crowdsec-integration)
+8. [Addons Tab – Which Log Sources to Enable?](#addons-tab--which-log-sources-to-enable)
+9. [Rules Tab](#rules-tab)
+10. [Whitelist Tab](#whitelist-tab)
+11. [Dashboard](#dashboard)
+12. [Blocked IPs](#blocked-ips)
+13. [Architecture Notes](#architecture-notes)
+14. [FAQ](#faq)
 
 ---
 
-## Was macht HA Guardian?
+## What does HA Guardian do?
 
-HA Guardian liest kontinuierlich die Log-Dateien und Docker-Logs deiner Home-Assistant-Addons. Erkennt es zu viele fehlgeschlagene Anmeldeversuche von einer IP-Adresse innerhalb eines konfigurierbaren Zeitfensters, wird die IP automatisch in `ip_bans.yaml` eingetragen – dem nativen Sperrmechanismus von Home Assistant.
+HA Guardian continuously reads the log files and Docker logs of your Home Assistant addons. When it detects too many failed login attempts from an IP address within a configurable time window, the IP is automatically banned – either in `ip_bans.yaml` (HA-native), via **CrowdSec LAPI** (Network Layer), or both.
 
 ```
-Angreifer → Nginx Proxy Manager → Addon (2FAuth, Vaultwarden…)
+Attacker → Nginx Proxy Manager → Addon (2FAuth, Vaultwarden…)
                 ↓                        ↓
-          NPM-Log (echte IP)      Docker-Log (Proxy-IP 172.30.32.1)
+          NPM log (real IP)       Docker log (proxy IP 172.30.32.1)
                 ↓
-           HA Guardian erkennt Angriff
+           HA Guardian detects attack
                 ↓
-         IP wird in ip_bans.yaml eingetragen
+         ┌─────────────────────────────────┐
+         │  ip_bans.yaml (Application Layer) │
+         │  CrowdSec LAPI (Network Layer)    │
+         └─────────────────────────────────┘
 ```
 
 ---
 
-## Funktionen
+## Features
 
-- 🔍 **Multi-Addon-Überwachung** – Docker-Logs und Dateien aller installierten Addons
-- 🛡️ **Automatisches Bannen** – schreibt direkt in HA's native `ip_bans.yaml`
-- ⏱️ **Zeitfenster-Filterung** – nur Log-Einträge innerhalb des konfigurierten Fensters zählen
-- 🌐 **Nginx Proxy Manager Integration** – erkennt echte Client-IPs hinter dem HA-Proxy
-- 📋 **15+ Erkennungsregeln** – vorkonfiguriert für gängige Dienste
-- ✏️ **Rules-Editor** – Regeln bearbeiten, hinzufügen, deaktivieren oder auf Werkseinstellungen zurücksetzen
-- 🔒 **Whitelist** – IPs und CIDR-Bereiche dauerhaft schützen, Auto-Whitelist der eigenen IP
-- 📊 **Dashboard** – alle Ereignisse auf einen Blick mit vollständiger Log-Zeile und Details-Button
-- 💾 **Persistent** – Einstellungen, Regeln und Whitelist bleiben nach Neustart erhalten
+- 🔍 **Multi-addon monitoring** – Docker logs and files of all installed addons
+- 🛡️ **Automatic banning** – writes directly to HA's native `ip_bans.yaml`
+- 🌐 **CrowdSec LAPI integration** – optional network-layer blocking via CrowdSec
+- 🎯 **Ban Targets** – ip_bans.yaml and CrowdSec independently toggleable
+- ⏱️ **Time window filtering** – only log entries within the configured window count
+- 🌐 **Nginx Proxy Manager integration** – detects real client IPs behind the HA proxy
+- 📋 **15+ detection rules** – preconfigured for common services
+- ✏️ **Rules editor** – edit, add, disable or reset rules to factory defaults
+- 🔒 **Whitelist** – permanently protect IPs and CIDR ranges, auto-whitelist your own IP
+- 🩺 **Health Check** – verifies log sources are active (entries within last 7 days)
+- 🗑️ **Unused Sources** – mark irrelevant log files as "Unused"
+- 📊 **Dashboard** – all events at a glance with full log line and details button
+- 💾 **Persistent** – settings, rules and whitelist survive restarts
 
 ---
 
 ## Installation
 
-1. In Home Assistant zu **Einstellungen → Add-ons → Add-on Store**
-2. **⋮ Menü → Repositories**
-3. URL hinzufügen: `https://github.com/gregorwolf1973/ha-guardian`
-4. **HA Guardian** im Store suchen und installieren
-5. Addon starten und über den **Ingress-Button** (Web-UI öffnen) aufrufen
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store**
+2. **⋮ Menu → Repositories**
+3. Add URL: `https://github.com/gregorwolf1973/ha-guardian`
+4. Search for **HA Guardian** and install
+5. Start the addon and open via the **Ingress button** (Open Web UI)
 
 ---
 
-## Schnellstart
+## Quick Start
 
-1. Addon installieren und starten
-2. Web-UI öffnen
-3. Im Tab **Addons** die gewünschten Log-Quellen mit dem Toggle **aktivieren**
-4. Im Tab **Whitelist** die eigene IP whitelisten (Auto-Whitelist wird beim ersten Öffnen angeboten)
-5. Fertig – Guardian überwacht nun die aktivierten Quellen
+1. Install and start the addon
+2. Open the Web UI
+3. In the **Addons** tab, enable desired log sources via toggle
+4. In the **Whitelist** tab, whitelist your own IP (auto-whitelist is offered on first open)
+5. Done – Guardian now monitors the enabled sources
 
 ---
 
-## Konfiguration
+## Configuration
 
-Die Einstellungen werden im **Settings-Tab** der Web-UI vorgenommen und persistent gespeichert.
-Die Werte in der HA-Addon-Konfigurationsseite dienen nur als initiale Standardwerte.
+Settings are configured in the **Settings tab** of the Web UI and stored persistently.
+Values on the HA addon configuration page only serve as initial defaults.
 
-| Einstellung | Standard | Beschreibung |
+| Setting | Default | Description |
 |---|---|---|
-| **Max. Versuche** | `5` | Anzahl fehlgeschlagener Logins bevor die IP gesperrt wird |
-| **Zeitfenster (Min.)** | `5` | Rollierendes Erkennungsfenster in Minuten |
-| **Sperrdauer (Min.)** | `240` | Ban-Dauer (`0` = dauerhaft) |
-| **Alert-Fenster (Std.)** | `24` | Wie weit zurück Ereignisse im Dashboard angezeigt werden |
-| **Log-Datei** | `/config/home-assistant.log` | Pfad zur HA-Core-Log-Datei |
+| **Max. Attempts** | `5` | Failed logins before the IP gets banned |
+| **Time Window (min)** | `5` | Rolling detection window in minutes |
+| **Ban Duration (min)** | `240` | Ban duration (`0` = permanent) |
+| **Alert Window (hrs)** | `24` | How far back events are shown on the dashboard |
+| **Log File** | `/config/home-assistant.log` | Path to the HA Core log file |
 
-> **Hinweis:** HA's eingebauter Bann-Mechanismus (`ip_ban_enabled`) und Guardian arbeiten unabhängig voneinander und können problemlos gleichzeitig aktiv sein. HA schützt nur die eigene Weboberfläche, Guardian zusätzlich alle anderen Addons.
+> **Note:** HA's built-in ban mechanism (`ip_ban_enabled`) and Guardian work independently and can run simultaneously. HA only protects its own web interface, Guardian protects all monitored addons.
 
 ---
 
-## Addons-Tab – welche Log-Quellen aktivieren?
+## Ban Targets
 
-Im Addons-Tab siehst du alle erkannten Log-Quellen mit Toggle zum Aktivieren/Deaktivieren.
+Under **Ban Targets** in the Settings tab you can choose where bans are written:
 
-### ⚡ Nginx Proxy Manager – Wichtigste Quelle
+| Target | Default | Description |
+|---|---|---|
+| **ip_bans.yaml** | ✅ On | Writes bans to HA's native `ip_bans.yaml` (Application Layer) |
+| **CrowdSec** | ✅ On | Sends bans to the CrowdSec LAPI (Network Layer) |
 
-**Aktivieren wenn du NPM als Reverse-Proxy verwendest.**
+Both targets can be toggled independently. For example, you can use only CrowdSec without writing to `ip_bans.yaml`.
 
-Da der gesamte Addon-Traffic über den HA-internen Proxy (`172.30.32.1`) läuft, enthält der Docker-Log der meisten Addons **nicht** die echte Angreifer-IP. NPM ist der einzige Punkt, an dem die echte Client-IP sichtbar ist:
+---
+
+## CrowdSec Integration
+
+Guardian can send bans directly to the [CrowdSec Local API](https://docs.crowdsec.net/docs/local_api/intro). CrowdSec can then enforce these bans at the network level (e.g. via a firewall bouncer).
+
+### Prerequisites
+
+1. **CrowdSec addon** installed and running in Home Assistant
+2. **Machine account** for Guardian (one-time setup in CrowdSec terminal):
+   ```bash
+   cscli machines add ha-guardian --password <your_password>
+   ```
+
+### Setup in Guardian
+
+1. Open the **Settings tab**
+2. Under **CrowdSec LAPI** fill in:
+   - **LAPI URL**: e.g. `http://a0d7b816-crowdsec:8080` (internal Docker hostname of the CrowdSec addon)
+   - **Machine ID**: `ha-guardian` (as specified in `cscli machines add`)
+   - **Password**: the chosen password (plaintext, **not** the SHA256 hash)
+3. Click **Test Connection** → a green toast appears on success
+4. Under **Ban Targets** enable the **CrowdSec** toggle
+
+### How it works
+
+- On every automatic or manual ban, Guardian sends an alert to `/v1/alerts` with an embedded ban decision
+- On every unban, the decision is removed via `DELETE /v1/decisions?ip=X.X.X.X`
+- Ban duration is passed 1:1 to CrowdSec (`0` = permanent → 10 years in CrowdSec)
+- Guardian authenticates as a machine watcher using JWT tokens with automatic renewal
+
+### Verify bans in CrowdSec
+
+```bash
+cscli decisions list
+```
+
+---
+
+## Addons Tab – Which Log Sources to Enable?
+
+The Addons tab shows all detected log sources with a toggle to enable/disable each one.
+
+### ⚡ Nginx Proxy Manager – Most Important Source
+
+**Enable this if you use NPM as a reverse proxy.**
+
+Since all addon traffic passes through HA's internal proxy (`172.30.32.1`), the Docker log of most addons does **not** contain the real attacker IP. NPM is the only point where the real client IP is visible:
 
 ```
 [01/Apr/2026:16:04:02 +0200] - 500 500 - POST https 2fa.example.com
 "/user/login" [Client 91.42.192.232] ...
-                               ↑ echte IP hier
+                               ↑ real IP here
 ```
 
-**NPM-Logging aktivieren:**
-1. NPM Web-UI öffnen → Settings → Default Site
-2. „Access Log" aktivieren
-3. Im Guardian Addons-Tab: `Docker: Nginx Proxy Manager` einschalten
+**Enable NPM logging:**
+1. NPM Web UI → Settings → Default Site
+2. Enable "Access Log"
+3. In Guardian Addons tab: enable `Docker: Nginx Proxy Manager`
 
 ---
 
-### Welche Quelle für welchen Dienst?
+### Which Source for Which Service?
 
-| Dienst | Empfohlene Quelle | Hinweis |
+| Service | Recommended Source | Note |
 |---|---|---|
-| **Home Assistant Core** | `/config/home-assistant.log` (Datei) | Standardmäßig aktiv — reicht vollständig, kein Docker-Eintrag nötig |
-| **Nginx Proxy Manager** | `Docker: Nginx Proxy Manager` | Wichtigste Quelle für externe Zugriffe – echte IPs |
-| **2FAuth** | NPM (bevorzugt) + `Docker: 2FAuth` | Docker-Log zeigt nur `172.30.32.1`; NPM erkennt Fehllogins via HTTP 500 |
-| **Vaultwarden** | `Docker: Vaultwarden` + NPM | Vaultwarden loggt direkt, aber externe Zugriffe kommen über NPM |
-| **DokuWiki** | `Docker: DokuWiki` + ggf. `auth.log`-Datei | DokuWiki schreibt Fehllogins in `data/log/auth.log` (Datei per File Search finden) |
-| **Nextcloud** | `Docker: Nextcloud` | Nextcloud loggt Fehllogins in stdout |
-| **Webtrees** | NPM | Webtrees gibt bei Fehllogin HTTP 200 zurück; NPM-Pattern erkennt den Login-Redirect |
-| **SSH** | Datei: `/config/home-assistant.log` | SSH-Muster sind in den Standardregeln enthalten |
+| **Home Assistant Core** | `/config/home-assistant.log` (file) | Active by default — sufficient, no Docker entry needed |
+| **Nginx Proxy Manager** | `Docker: Nginx Proxy Manager` | Most important source for external access – real IPs |
+| **2FAuth** | NPM (preferred) + `Docker: 2FAuth` | Docker log only shows `172.30.32.1`; NPM detects failed logins via HTTP 500 |
+| **Vaultwarden** | `Docker: Vaultwarden` + NPM | Vaultwarden logs directly, but external access comes via NPM |
+| **DokuWiki** | `Docker: DokuWiki` + `auth.log` file | DokuWiki writes failed logins to `data/log/auth.log` (find via File Search) |
+| **Nextcloud** | `Docker: Nextcloud` | Nextcloud logs failed logins to stdout |
+| **Webtrees** | NPM | Webtrees returns HTTP 200 on failed login; NPM pattern detects the login redirect |
+| **SSH** | File: `/config/home-assistant.log` | SSH patterns are included in the default rules |
 
-> **Faustregel:** Wenn ein Addon seinen Docker-Log nur mit `172.30.32.1` befüllt → NPM aktivieren statt (oder zusätzlich zu) dem Docker-Log des Addons.
+> **Rule of thumb:** If an addon only logs `172.30.32.1` as client IP → enable NPM instead of (or in addition to) the addon's Docker log.
 
 ### Log File Search
 
-Im Addons-Tab gibt es eine **Dateisuche** um Log-Dateien in allen Addon-Verzeichnissen zu finden:
-- Eingabe z. B. `auth.log` findet alle auth.log-Dateien
-- **Preview** zeigt die letzten Zeilen der Datei
-- Gefundene Pfade können als manuelle Quellen hinzugefügt werden
+The Addons tab has a **file search** to find log files across all addon directories:
+- Enter e.g. `auth.log` to find all auth.log files
+- **Preview** shows the last lines of the file
+- Found paths can be added as manual sources
+
+### Health Check
+
+The **Health Check** button in the Addons tab checks all enabled log sources:
+- **Green (ok)** – source has recent log entries (last 7 days)
+- **Red (stale)** – source has no recent entries → row is highlighted red
+- **Grey (empty)** – source is empty or unreadable
+
+This lets you quickly identify whether an enabled source is actually delivering data.
+
+### Unused Sources
+
+Log files discovered by Guardian but not needed can be marked as unused via **Reassign → Unused**. They appear greyed out in a separate group and are not monitored. This prevents irrelevant sources from cluttering the overview.
 
 ---
 
-## Rules-Tab
+## Rules Tab
 
-### Vorkonfigurierte Regeln
+### Preconfigured Rules
 
-| Regel-ID | Erkennt |
+| Rule ID | Detects |
 |---|---|
-| `ha_ban` | HA-eigene Ban-Einträge |
-| `nginx_auth` | Nginx 401/403 Authentifizierungsfehler |
-| `generic_fail` | Allgemeine Fehllogin-Muster |
-| `ssh_fail` | SSH-Fehllogins |
-| `nextcloud` | Nextcloud-Fehllogins |
-| `vaultwarden` | Vaultwarden/Bitwarden-Fehllogins |
-| `dovecot_postfix` | Dovecot/Postfix Mail-Fehllogins |
-| `laravel_auth` | Laravel-Applikationen |
-| `webtrees_fail` | Webtrees (HTTP 200 auf Login-Redirect) |
+| `ha_ban` | HA's own ban entries |
+| `nginx_auth` | Nginx 401/403 authentication errors |
+| `generic_fail` | Generic failed login patterns |
+| `ssh_fail` | SSH failed logins |
+| `nextcloud` | Nextcloud failed logins |
+| `vaultwarden` | Vaultwarden/Bitwarden failed logins |
+| `dovecot_postfix` | Dovecot/Postfix mail failed logins |
+| `laravel_auth` | Laravel applications |
+| `webtrees_fail` | Webtrees (HTTP 200 on login redirect) |
 | `dokuwiki_auth` | DokuWiki auth.log |
-| `2fauth_login` | 2FAuth direkter Zugriff |
-| `ha_core_invalid_auth` | HA Core invalid_auth Ereignisse |
-| `http_login_fail` | Generische HTTP 4xx/5xx Login-Endpoints |
-| `npm_proxy` | Nginx Proxy Manager – echte Client-IP via `[Client X.X.X.X]` |
+| `2fauth_login` | 2FAuth direct access |
+| `ha_core_invalid_auth` | HA Core invalid_auth events |
+| `http_login_fail` | Generic HTTP 4xx/5xx login endpoints |
+| `npm_proxy` | Nginx Proxy Manager – real client IP via `[Client X.X.X.X]` |
 
-### Regeln verwalten
+### Managing Rules
 
-- **Toggle** – Regel ein-/ausschalten ohne sie zu löschen
-- **Edit** – Pattern, Beschreibung und Flags anpassen; mit Live-Tester
-- **Copy** – als Basis für eine neue Regel verwenden
-- **Delete** – Regel löschen
-- **🔧 Werkseinstellungen** – alle Regeln auf Standard zurücksetzen
+- **Toggle** – enable/disable a rule without deleting it
+- **Edit** – modify pattern, description and flags; with live tester
+- **Copy** – use as basis for a new rule
+- **Delete** – remove rule
+- **🔧 Factory Reset** – reset all rules to defaults
 
-### Eigene Regel erstellen
+### Creating Custom Rules
 
-1. **+ New Rule** klicken
-2. Eindeutige ID (snake_case, z. B. `meine_app_fail`)
-3. Regex-Pattern mit Capture-Group für die IP:
+1. Click **+ New Rule**
+2. Choose a unique ID (snake_case, e.g. `my_app_fail`)
+3. Regex pattern with capture group for the IP:
    ```
    Login failed.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
    ```
-4. Mit **Test** gegen eine Beispiel-Log-Zeile testen
-5. Speichern – Regel ist sofort aktiv
+4. **Test** against a sample log line
+5. Save – rule is active immediately
 
 ### Unmatched Auth Lines
 
-Unter den Regeln erscheinen Log-Zeilen mit auth-Schlüsselwörtern, die von keiner Regel erkannt wurden. Hilfreiche Basis um neue Regeln zu entwickeln.
+Below the rules, log lines containing auth keywords that no rule matched are displayed. Useful as a basis for developing new rules.
 
 ---
 
-## Whitelist-Tab
+## Whitelist Tab
 
 ### Auto-Whitelist
 
-Beim ersten Öffnen der Guardian-UI wird die eigene öffentliche IP (via ipinfo.io) automatisch erkannt und zur Whitelist hinzugefügt. Ändert sich die IP, wird beim nächsten Öffnen die neue IP hinzugefügt und die alte entfernt.
+On first opening the Guardian UI, your public IP (via ipinfo.io) is automatically detected and added to the whitelist. If your IP changes, the new IP is added and the old one removed on next visit.
 
-- **Deaktivieren** → Klick auf „Disable" + Bestätigung
-- **Reaktivieren** → Klick auf „Enable Auto-whitelist"
+- **Disable** → click "Disable" + confirm
+- **Re-enable** → click "Enable Auto-whitelist"
 
-> ⚠️ Beim Entfernen der eigenen IP erscheint eine Warnung – ohne Whitelist-Eintrag kann man sich selbst aussperren.
+> ⚠️ Removing your own IP shows a warning – without a whitelist entry you could lock yourself out.
 
-### Standardmäßig whitelisted
+### Whitelisted by Default
 
-- `127.0.0.1` – Localhost
-- `172.30.32.0/24` – HA-internes Netzwerk
-- `192.168.0.0/16` – Lokales Heimnetzwerk
+- `127.0.0.1` – localhost
+- `172.30.32.0/24` – HA internal network
+- `192.168.0.0/16` – local home network
 
-### Manuelle Einträge
+### Manual Entries
 
-- Einzelne IP: `91.42.192.232`
-- CIDR-Bereich: `192.168.178.0/24`
+- Single IP: `91.42.192.232`
+- CIDR range: `192.168.178.0/24`
 
 ---
 
 ## Dashboard
 
-Zeigt alle erkannten Login-Fehlversuche im konfigurierten Zeitfenster.
+Shows all detected failed login attempts within the configured time window.
 
-| Spalte | Bedeutung |
+| Column | Meaning |
 |---|---|
-| Time | Zeitpunkt der Erkennung |
-| IP Address | Die angreifende IP |
-| Source | Log-Quelle |
-| Attempts | Zähler der Fehlversuche dieser IP |
-| Status | `ATTEMPT` oder `BANNED` |
-| Log Line | Originale Log-Zeile |
-| Details | Vollständige Zeile im Modal |
+| Time | Timestamp of detection |
+| IP Address | The attacking IP |
+| Source | Log source |
+| Attempts | Failed attempt count for this IP |
+| Status | `ATTEMPT` or `BANNED` |
+| Log Line | Original log line |
+| Details | Full line in modal |
 
 ---
 
 ## Blocked IPs
 
-Übersicht aller gesperrten IPs.
+Overview of all banned IPs.
 
-- **Details** – zeigt welche Log-Einträge den Ban ausgelöst haben
-- **Unban** – hebt die Sperre sofort auf
-- **Ban IP** – manuelle Sperre mit optionaler Dauer und Begründung
+- **Details** – shows which log entries triggered the ban
+- **Unban** – lifts the ban immediately
+- **Ban IP** – manual ban with optional duration and reason
 
-> Home Assistant liest `ip_bans.yaml` beim Neustart ein und banned die eingetragenen IP's.
+> Home Assistant reads `ip_bans.yaml` on restart and enforces all listed bans.
 
 ---
 
-## Hinweise zur Architektur
+## Architecture Notes
 
-### Warum zeigen viele Addons nur 172.30.32.1 als Client-IP?
+### Why do many addons only show 172.30.32.1 as client IP?
 
-HA leitet externen Traffic über einen internen Proxy weiter. Addons sehen daher als Client-IP immer `172.30.32.1` statt der echten externen IP. Nginx Proxy Manager liegt **vor** diesem Proxy und sieht die echte IP – deshalb ist NPM die wichtigste Log-Quelle.
+HA routes external traffic through an internal proxy. Addons therefore always see `172.30.32.1` as the client IP instead of the real external IP. Nginx Proxy Manager sits **in front of** this proxy and sees the real IP – that's why NPM is the most important log source.
 
-### Zähler über mehrere Quellen
+### Cross-source counting
 
-Fehllogins verschiedener Addons werden **zusammengezählt**:
+Failed logins from different addons are **counted together**:
 > 2× 2FAuth + 2× Webtrees + 1× Vaultwarden = 5 → Ban
 
-Das ist gewollt: Ein Angreifer der mehrere Dienste gleichzeitig attackiert soll schneller gesperrt werden.
+This is intentional: an attacker probing multiple services simultaneously should be banned faster.
 
 ---
 
-## Häufige Fragen
+## FAQ
 
-**Q: Der Ban erscheint in der Liste, aber die IP ist nicht wirklich gesperrt?**
-→ HA überwacht `ip_bans.yaml` in Echtzeit — kein Neustart nötig. Prüfe ob die IP wirklich in `ip_bans.yaml` steht (Datei im Konfigurationsverzeichnis).
+**Q: The ban appears in the list but the IP isn't actually blocked?**
+→ HA monitors `ip_bans.yaml` in real time – no restart needed. Check that the IP is actually in `ip_bans.yaml` in the config directory.
 
-**Q: Keine Alerts obwohl Fehllogins stattfinden?**
-→ Im Addons-Tab prüfen ob die relevante Quelle aktiviert ist. Bei externen Zugriffen: NPM-Log aktivieren.
+**Q: No alerts even though failed logins are happening?**
+→ Check the Addons tab to see if the relevant source is enabled. For external access: enable the NPM log.
 
-**Q: Wie finde ich die Log-Datei eines Addons?**
-→ Addons-Tab → **Log File Search** → Dateiname eingeben (z. B. `auth.log`).
+**Q: How do I find the log file of an addon?**
+→ Addons tab → **Log File Search** → enter filename (e.g. `auth.log`).
 
-**Q: Kann ich Guardian parallel zu CrowdSec betreiben?**
-→ Grundsätzlich ja, aber CrowdSec könnte Guardian-Anfragen blockieren. Empfehlung: erst testen wenn CrowdSec pausiert ist.
+**Q: How does the CrowdSec integration work?**
+→ Guardian sends bans directly to the CrowdSec LAPI. See [CrowdSec Integration](#crowdsec-integration) for setup. Bans and unbans are automatically synchronized.
 
-**Q: Wie erstelle ich eine Regel für eine eigene App?**
-→ Rules-Tab → **+ New Rule** → Regex mit Capture-Group `(\d{1,3}(?:\.\d{1,3}){3})` für die IP-Adresse.
+**Q: Can I run Guardian alongside CrowdSec?**
+→ Yes! Guardian registers as a CrowdSec machine and sends bans directly to the LAPI. CrowdSec's own scenarios and Guardian bans complement each other.
+
+**Q: How do I create a rule for a custom app?**
+→ Rules tab → **+ New Rule** → Regex with capture group `(\d{1,3}(?:\.\d{1,3}){3})` for the IP address.
+
+**Q: What happens if CrowdSec is unreachable?**
+→ The ban is still written to `ip_bans.yaml` (if enabled). CrowdSec errors are logged but don't block the ban process.
 
 ---
 
-## Lizenz
+## License
 
 MIT License
 

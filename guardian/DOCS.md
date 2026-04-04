@@ -1,6 +1,6 @@
 # HA Guardian – Dokumentation
 
-Brute-force-Schutz für Home Assistant: überwacht Logs aller installierten Addons, erkennt fehlgeschlagene Anmeldeversuche und sperrt angreifende IPs automatisch über `ip_bans.yaml`.
+Brute-force-Schutz für Home Assistant: überwacht Logs aller installierten Addons, erkennt fehlgeschlagene Anmeldeversuche und sperrt angreifende IPs automatisch über `ip_bans.yaml` (Application Layer) und optional via **CrowdSec LAPI** (Network Layer).
 
 ---
 
@@ -71,6 +71,45 @@ Home Assistant überwacht `ip_bans.yaml` auf Änderungen. Neue Bans von Guardian
 
 ---
 
+## Ban Targets
+
+Im Settings-Tab unter **Ban Targets** kann festgelegt werden, wohin Bans geschrieben werden:
+
+- **ip_bans.yaml** (Standard: an) – HA's nativer Sperrmechanismus
+- **CrowdSec** (Standard: an) – sendet Bans an die CrowdSec LAPI für Network-Layer-Blocking
+
+Beide Targets sind unabhängig voneinander schaltbar.
+
+---
+
+## CrowdSec LAPI Integration
+
+Guardian kann Bans direkt an die CrowdSec Local API senden. Voraussetzungen:
+
+1. CrowdSec Addon installiert und gestartet
+2. Machine-Account anlegen: `cscli machines add ha-guardian --password <passwort>`
+3. In Guardian Settings: LAPI URL, Machine ID und Passwort (Klartext) eintragen
+4. **Test Connection** → bei Erfolg ist die Integration aktiv
+
+Bei jedem Ban/Unban wird automatisch eine Decision in CrowdSec erstellt bzw. entfernt. Ban-Dauer wird 1:1 übergeben (0 = dauerhaft → 10 Jahre in CrowdSec).
+
+---
+
+## Health Check
+
+Der **Health Check**-Button im Addons-Tab prüft alle aktivierten Quellen auf Aktualität:
+- **ok** (grün) – Einträge in den letzten 7 Tagen vorhanden
+- **stale** (rot) – keine aktuellen Einträge
+- **empty** (grau) – Quelle leer oder nicht lesbar
+
+---
+
+## Unused Sources
+
+Erkannte aber nicht benötigte Log-Dateien können über **Reassign → Unused** als ungenutzt markiert werden. Sie erscheinen ausgegraut und werden nicht überwacht.
+
+---
+
 ## Rules-Tab
 
 Alle Erkennungsregeln können hier verwaltet werden:
@@ -109,8 +148,11 @@ Login failed.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
 **Wie finde ich die Log-Datei eines Addons?**
 → Addons-Tab → Log File Search → Dateiname eingeben.
 
+**Wie funktioniert die CrowdSec-Integration?**
+→ Guardian sendet Bans direkt an die CrowdSec LAPI als Machine-Watcher. Einrichtung: siehe CrowdSec LAPI Integration oben.
+
 **Kann ich Guardian parallel zu CrowdSec betreiben?**
-→ Ja, aber CrowdSec könnte Guardian-Anfragen blockieren. Empfehlung: erst ohne CrowdSec testen.
+→ Ja! Guardian registriert sich als Machine und sendet Bans an die LAPI. CrowdSec-eigene Szenarien und Guardian-Bans ergänzen sich.
 
 ---
 
