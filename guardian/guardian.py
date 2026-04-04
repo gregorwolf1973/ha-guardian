@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.23.9"
+VERSION = "1.24.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -482,7 +482,16 @@ class PersistentState:
 
     @property
     def crowdsec_machine_password(self) -> str:
-        return self._data.get("crowdsec_machine_password", "")
+        pw = self._data.get("crowdsec_machine_password", "")
+        # Safety: v1.23.2 accidentally stored SHA256 hash instead of plaintext.
+        # Detect and clear it — 64 hex chars is almost certainly a hash, not a real password.
+        if pw and len(pw) == 64 and all(c in "0123456789abcdef" for c in pw):
+            log.warning("CrowdSec: stored password looks like a SHA256 hash — clearing it. "
+                        "Please re-enter your password in Settings.")
+            self._data["crowdsec_machine_password"] = ""
+            self.save()
+            return ""
+        return pw
 
     @crowdsec_machine_password.setter
     def crowdsec_machine_password(self, value: str):
@@ -710,21 +719,35 @@ class CrowdSecManager:
             }],
         }]
 
-    async def _post_alert(self, url: str, payload: list, headers: dict) -> tuple:
-        """POST /v1/alerts. Returns (ok_bool, status_int, body_str)."""
+    @staticmethod
+    def _http_request(url: str, method: str = "GET", data: bytes = None,
+                      headers: dict = None, timeout: int = 10) -> tuple:
+        """Low-level HTTP via urllib (stdlib). Returns (status_int, body_str).
+        Bypasses aiohttp entirely — uses the same code-path as curl/wget."""
+        import urllib.request
+        import urllib.error
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Content-Type", "application/json")
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
         try:
-            connector = aiohttp_client.TCPConnector(ssl=False)
-            async with aiohttp_client.ClientSession(connector=connector) as session:
-                async with session.post(
-                    f"{url}/v1/alerts",
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    body = await resp.text()
-                    return resp.status in (200, 201), resp.status, body
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
+            return e.code, body
+        except urllib.error.URLError as e:
+            return 0, str(e.reason)
         except Exception as e:
-            return False, 0, str(e)
+            return 0, str(e)
+
+    async def _post_alert(self, url: str, payload: list, headers: dict) -> tuple:
+        """POST /v1/alerts via urllib. Returns (ok_bool, status_int, body_str)."""
+        data = json.dumps(payload).encode("utf-8")
+        status, body = await asyncio.to_thread(
+            self._http_request, f"{url}/v1/alerts", "POST", data, headers
+        )
+        return status in (200, 201), status, body
 
     async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
         """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
@@ -754,69 +777,53 @@ class CrowdSecManager:
         else:
             log.warning("CrowdSec: submit failed for %s (%d): %s", ip, status, body[:200])
 
-    async def _login(self) -> tuple:
-        """Returns (token_or_None, error_str_or_None)."""
-        url = self._state.crowdsec_lapi_url.rstrip("/")
-        machine_id = self._state.crowdsec_machine_id
-        password = self._state.crowdsec_machine_password
-        try:
-            connector = aiohttp_client.TCPConnector(ssl=False)
-            async with aiohttp_client.ClientSession(connector=connector) as session:
-                async with session.post(
-                    f"{url}/v1/watchers/login",
-                    json={"machine_id": machine_id, "password": password, "scenarios": []},
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    body = await resp.text()
-                    if resp.status == 200:
-                        data = json.loads(body)
-                        token = data.get("token")
-                        if not token:
-                            return None, f"HTTP 200 but no token: {body[:200]}"
-                        self._jwt = token
-                        self._jwt_expires = datetime.now(timezone.utc) + timedelta(hours=23)
-                        log.info("CrowdSec: logged in as '%s'", machine_id)
-                        return self._jwt, None
-                    log.warning("CrowdSec login failed (%d): %s", resp.status, body[:300])
-                    return None, f"HTTP {resp.status}: {body[:300]}"
-        except Exception as e:
-            log.warning("CrowdSec login error: %s", e)
-            return None, str(e)
+    async def _login(self, url: str = None, machine_id: str = None, password: str = None) -> tuple:
+        """Returns (token_or_None, error_str_or_None). Uses urllib (stdlib)."""
+        url = (url or self._state.crowdsec_lapi_url or "").rstrip("/")
+        machine_id = machine_id or self._state.crowdsec_machine_id
+        password = password or self._state.crowdsec_machine_password
+        pw_hint = f"{password[:3]}***{password[-2:]}" if password and len(password) > 5 else "???"
+        log.info("CrowdSec: login attempt — machine_id=%s, pw_hint=%s, pw_len=%d, url=%s",
+                 machine_id, pw_hint, len(password) if password else 0, url)
+        data = json.dumps({"machine_id": machine_id, "password": password, "scenarios": []}).encode("utf-8")
+        status, body = await asyncio.to_thread(
+            self._http_request, f"{url}/v1/watchers/login", "POST", data, {}
+        )
+        if status == 200:
+            try:
+                tok = json.loads(body).get("token")
+            except Exception:
+                return None, f"HTTP 200 but bad JSON: {body[:200]}"
+            if not tok:
+                return None, f"HTTP 200 but no token: {body[:200]}"
+            self._jwt = tok
+            self._jwt_expires = datetime.now(timezone.utc) + timedelta(hours=23)
+            log.info("CrowdSec: logged in as '%s'", machine_id)
+            return self._jwt, None
+        log.warning("CrowdSec login failed (%d): %s", status, body[:300])
+        return None, f"HTTP {status}: {body[:300]}"
 
     async def test_connection(self, url: str = None, machine_id: str = None, password: str = None) -> dict:
-        """Test connectivity. Tries trusted-IP mode first, then machine login."""
+        """Test connectivity via urllib. Tries trusted-IP mode first, then machine login."""
         test_url = (url or self._state.crowdsec_lapi_url or "").rstrip("/")
         if not test_url:
             return {"ok": False, "error": "LAPI URL not configured"}
 
         # 1) Reachability check via GET /v1/heartbeat
-        try:
-            connector = aiohttp_client.TCPConnector(ssl=False)
-            async with aiohttp_client.ClientSession(connector=connector) as session:
-                async with session.get(
-                    f"{test_url}/v1/heartbeat",
-                    timeout=aiohttp_client.ClientTimeout(total=5),
-                ) as resp:
-                    if resp.status not in (200, 401, 403):
-                        body = await resp.text()
-                        return {"ok": False, "error": f"LAPI not reachable: HTTP {resp.status}: {body[:100]}"}
-        except Exception as e:
-            return {"ok": False, "error": f"Cannot reach LAPI: {e}"}
+        status, body = await asyncio.to_thread(
+            self._http_request, f"{test_url}/v1/heartbeat", "GET", None, None, 5
+        )
+        if status == 0:
+            return {"ok": False, "error": f"Cannot reach LAPI: {body}"}
+        log.info("CrowdSec heartbeat: %d", status)
 
-        # 2) Try trusted-IP mode: GET /v1/alerts (machine endpoint, no auth needed for trusted IPs)
-        try:
-            connector = aiohttp_client.TCPConnector(ssl=False)
-            async with aiohttp_client.ClientSession(connector=connector) as session:
-                async with session.get(
-                    f"{test_url}/v1/alerts",
-                    timeout=aiohttp_client.ClientTimeout(total=5),
-                ) as resp:
-                    body = await resp.text()
-                    log.info("CrowdSec trusted-IP test: GET /v1/alerts → %d: %s", resp.status, body[:100])
-                    if resp.status == 200:
-                        return {"ok": True, "message": "Connected via trusted-IP (no auth required) — decisions will be submitted automatically"}
-        except Exception as e:
-            log.debug("CrowdSec trusted-IP test failed: %s", e)
+        # 2) Try trusted-IP mode: GET /v1/alerts (no auth)
+        status, body = await asyncio.to_thread(
+            self._http_request, f"{test_url}/v1/alerts", "GET", None, None, 5
+        )
+        log.info("CrowdSec trusted-IP test: GET /v1/alerts → %d: %s", status, body[:100])
+        if status == 200:
+            return {"ok": True, "message": "Connected via trusted-IP (no auth required) — decisions will be submitted automatically"}
 
         # 3) Try machine login
         test_id = machine_id or self._state.crowdsec_machine_id or ""
@@ -825,24 +832,11 @@ class CrowdSecManager:
             return {"ok": False, "error": "Trusted-IP mode failed and Machine ID not configured"}
         if not test_pw:
             return {"ok": False, "error": "Trusted-IP mode failed — enter Machine ID and Password for login mode"}
-        try:
-            connector = aiohttp_client.TCPConnector(ssl=False)
-            async with aiohttp_client.ClientSession(connector=connector) as session:
-                async with session.post(
-                    f"{test_url}/v1/watchers/login",
-                    json={"machine_id": test_id, "password": test_pw, "scenarios": []},
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    body = await resp.text()
-                    log.info("CrowdSec login test (%d): %s", resp.status, body[:200])
-                    if resp.status == 200:
-                        data = json.loads(body)
-                        if data.get("token"):
-                            return {"ok": True, "message": f"Connected via machine login as '{test_id}'"}
-                        return {"ok": False, "error": f"HTTP 200 but no token: {body[:200]}"}
-                    return {"ok": False, "error": f"Login failed: HTTP {resp.status}: {body[:300]}"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+
+        tok, err = await self._login(test_url, test_id, test_pw)
+        if tok:
+            return {"ok": True, "message": f"Connected via machine login as '{test_id}'"}
+        return {"ok": False, "error": f"Login failed: {err}"}
 
 
 # ---------------------------------------------------------------------------
