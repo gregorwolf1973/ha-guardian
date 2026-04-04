@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.7"
+VERSION = "1.24.8"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -721,10 +721,13 @@ class CrowdSecManager:
         # CrowdSec uses decision.duration for ban expiry (until = created_at + duration).
         # stop_at is just alert metadata — set to same as start_at.
         if duration_minutes > 0:
-            duration_str = f"{duration_minutes}m0s"
+            h, m = divmod(duration_minutes, 60)
+            duration_str = f"{h}h{m}m0s"  # Go canonical: "1h0m0s", "4h0m0s"
         else:
             # 0 = permanent in Guardian → 10 years in CrowdSec
             duration_str = "87600h0m0s"
+        log.info("CrowdSec: building alert for %s — duration_str=%s, duration_minutes=%d",
+                 ip, duration_str, duration_minutes)
         return [{
             "message": reason,
             "events": [{"timestamp": now_str, "meta": [{"key": "source_ip", "value": ip}]}],

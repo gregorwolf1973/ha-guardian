@@ -1,5 +1,5 @@
 name: "HA Guardian"
-version: "1.24.7"
+version: "1.24.8"
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs via ip_bans.yaml (application layer) with optional network-level blocking"
 url: "https://github.com/gregorwolf1973/ha-guardian"
