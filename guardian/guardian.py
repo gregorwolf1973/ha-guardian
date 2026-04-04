@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.2"
+VERSION = "1.24.3"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -699,6 +699,7 @@ class CrowdSecManager:
         return [{
             "message": reason,
             "events": [{"timestamp": start_at, "meta": [{"key": "source_ip", "value": ip}]}],
+            "events_count": 1,
             "stop_at": stop_at,
             "start_at": start_at,
             "capacity": -1,
