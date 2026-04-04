@@ -1271,19 +1271,12 @@ async function testCrowdSec() {
   result.textContent = 'Testing…';
   result.style.color = 'var(--muted)';
   try {
-    // Pass credentials directly in the test request (page may have cleared the password field)
-    const pw = document.getElementById('cfgCsPassword').value;
-    if (!pw) {
-      result.textContent = '✗ Enter the password in the field above first';
-      result.style.color = 'var(--danger)';
-      btn.disabled = false;
-      return;
-    }
     const testPayload = {
       url: document.getElementById('cfgCsUrl').value.trim(),
       machine_id: document.getElementById('cfgCsMachineId').value.trim(),
-      password: pw,
     };
+    const pw = document.getElementById('cfgCsPassword').value;
+    if (pw) testPayload.password = pw;
     const r = await api('POST', 'api/crowdsec/test', testPayload);
     if (r.ok) {
       result.textContent = '✓ ' + r.message;
