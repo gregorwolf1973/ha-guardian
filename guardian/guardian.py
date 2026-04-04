@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.3"
+VERSION = "1.24.4"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -498,6 +498,27 @@ class PersistentState:
         self._data["crowdsec_machine_password"] = value
         self.save()
 
+    # -- Ban targets (where to write bans) --
+    @property
+    def ban_to_ipbans(self) -> bool:
+        """Write bans to ip_bans.yaml (HA application-level blocking). Default True."""
+        return self._data.get("ban_to_ipbans", True)
+
+    @ban_to_ipbans.setter
+    def ban_to_ipbans(self, value: bool):
+        self._data["ban_to_ipbans"] = bool(value)
+        self.save()
+
+    @property
+    def ban_to_crowdsec(self) -> bool:
+        """Send bans to CrowdSec LAPI. Default True (if CrowdSec is configured)."""
+        return self._data.get("ban_to_crowdsec", True)
+
+    @ban_to_crowdsec.setter
+    def ban_to_crowdsec(self, value: bool):
+        self._data["ban_to_crowdsec"] = bool(value)
+        self.save()
+
     # -- Config overrides --
     @property
     def config_overrides(self) -> dict:
@@ -637,6 +658,9 @@ class Config:
                 and self._state.crowdsec_machine_id
                 and self._state.crowdsec_machine_password
             ),
+            # Ban targets
+            "ban_to_ipbans": self._state.ban_to_ipbans,
+            "ban_to_crowdsec": self._state.ban_to_crowdsec,
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -693,9 +717,10 @@ class CrowdSecManager:
 
     def _build_alert_payload(self, ip: str, duration_minutes: int, reason: str) -> list:
         now = datetime.now(timezone.utc)
-        stop_at   = (now + timedelta(minutes=max(1, duration_minutes))).strftime("%Y-%m-%dT%H:%M:%SZ")
         start_at  = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        duration_str = f"{max(1, duration_minutes)}m"
+        stop_at   = start_at  # point event — decision.duration controls the ban length
+        # 0 = permanent in Guardian → 10 years in CrowdSec
+        duration_str = f"{duration_minutes}m" if duration_minutes > 0 else "87600h"
         return [{
             "message": reason,
             "events": [{"timestamp": start_at, "meta": [{"key": "source_ip", "value": ip}]}],
@@ -1872,6 +1897,8 @@ class BanManager:
             log.error("Error loading ip_bans.yaml: %s", e)
 
     async def _flush(self):
+        if not self.config._state.ban_to_ipbans:
+            return
         tmp = BANS_FILE + ".tmp"
         try:
             data = {}
@@ -1907,7 +1934,7 @@ class BanManager:
             await self._flush()
         self._fw_ban(ip)
         log.info("Banned %s for %d min — %s", ip, dur, reason)
-        if self._crowdsec and not skip_crowdsec:
+        if self._crowdsec and not skip_crowdsec and self.config._state.ban_to_crowdsec:
             asyncio.create_task(self._crowdsec.submit_ban(ip, dur, reason))
         return True
 
@@ -1923,7 +1950,7 @@ class BanManager:
             await self._flush()
         self._fw_unban(ip)
         log.info("Unbanned %s", ip)
-        if self._crowdsec and not skip_crowdsec:
+        if self._crowdsec and not skip_crowdsec and self.config._state.ban_to_crowdsec:
             asyncio.create_task(self._crowdsec.delete_ban(ip))
         return True
 
@@ -2418,7 +2445,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             if ok:
                 # Await CrowdSec directly so we can return its result
                 cs_result = None
-                if crowdsec_mgr:
+                if crowdsec_mgr and config._state.ban_to_crowdsec:
                     cs_result = await crowdsec_mgr.submit_ban(ip, dur, reason)
                 return web.json_response({"ok": True, "crowdsec": cs_result})
             return web.json_response({"ok": False, "error": "IP is whitelisted"}, status=400)
@@ -2432,7 +2459,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             # Clear the detector window so counter restarts from 0
             detector.clear_window(ip)
             cs_result = None
-            if crowdsec_mgr:
+            if crowdsec_mgr and config._state.ban_to_crowdsec:
                 cs_result = await crowdsec_mgr.delete_ban(ip)
             return web.json_response({"ok": True, "crowdsec": cs_result})
         return web.json_response({"ok": False, "error": "not found"}, status=404)
@@ -2566,6 +2593,11 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config._state.crowdsec_machine_id = str(d["crowdsec_machine_id"]).strip()
         if "crowdsec_machine_password" in d and d["crowdsec_machine_password"]:
             config._state.crowdsec_machine_password = str(d["crowdsec_machine_password"])
+        # Ban targets
+        if "ban_to_ipbans" in d:
+            config._state.ban_to_ipbans = bool(d["ban_to_ipbans"])
+        if "ban_to_crowdsec" in d:
+            config._state.ban_to_crowdsec = bool(d["ban_to_crowdsec"])
         config.save()
         return web.json_response({"ok": True})
 

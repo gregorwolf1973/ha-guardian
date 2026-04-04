@@ -465,6 +465,22 @@
       </div>
 
       <div class="field-group" style="grid-column: 1 / -1">
+        <h3>Ban Targets</h3>
+        <p style="font-size:13px;color:var(--muted);margin:0 0 10px">Choose where Guardian writes bans. At least one should be enabled.</p>
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="cfgBanIpbans" style="width:16px;height:16px">
+            Add IP to <strong>ip_bans.yaml</strong>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="cfgBanCrowdsec" style="width:16px;height:16px">
+            Send ban to <strong>CrowdSec</strong>
+          </label>
+        </div>
+        <div class="hint" style="margin-top:6px">ip_bans.yaml = HA application-level blocking · CrowdSec = network-level blocking via firewall bouncer</div>
+      </div>
+
+      <div class="field-group" style="grid-column: 1 / -1">
         <h3>CrowdSec Integration</h3>
         <div style="background:var(--surface-alt,#1e1e2e);border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.8">
           <strong>One-time setup</strong> — run this in the <em>CrowdSec addon terminal</em>:<br>
@@ -1151,6 +1167,9 @@ async function loadSettings() {
     document.getElementById('cfgAddonPoll').value = c.addon_poll_interval || 15;
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     _renderDomainChips(c.trusted_domains || []);
+    // Ban targets
+    document.getElementById('cfgBanIpbans').checked = c.ban_to_ipbans !== false;  // default true
+    document.getElementById('cfgBanCrowdsec').checked = !!c.ban_to_crowdsec;
     // CrowdSec
     document.getElementById('cfgCsEnabled').checked = !!c.crowdsec_enabled;
     document.getElementById('cfgCsUrl').value = c.crowdsec_lapi_url || '';
@@ -1259,6 +1278,8 @@ async function saveSettings(ev) {
       addon_poll_interval: parseInt(document.getElementById('cfgAddonPoll').value),
       log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
       trusted_domains: _getCurrentDomains(),
+      ban_to_ipbans: document.getElementById('cfgBanIpbans').checked,
+      ban_to_crowdsec: document.getElementById('cfgBanCrowdsec').checked,
       crowdsec_enabled: document.getElementById('cfgCsEnabled').checked,
       crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
       crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
