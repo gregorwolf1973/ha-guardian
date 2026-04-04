@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.23.6"
+VERSION = "1.23.7"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -682,61 +682,14 @@ class CrowdSecManager:
             and bool(self._state.crowdsec_machine_password)
         )
 
-    async def _login(self) -> tuple:
-        """Returns (token_or_None, error_str_or_None)."""
-        url = self._state.crowdsec_lapi_url.rstrip("/")
-        machine_id = self._state.crowdsec_machine_id
-        password = self._state.crowdsec_machine_password
-        try:
-            async with aiohttp_client.ClientSession() as session:
-                async with session.post(
-                    f"{url}/v1/watchers/login",
-                    json={"machine_id": machine_id, "password": password, "scenarios": []},
-                    timeout=aiohttp_client.ClientTimeout(total=10),
-                ) as resp:
-                    body = await resp.text()
-                    if resp.status == 200:
-                        data = json.loads(body)
-                        token = data.get("token")
-                        if not token:
-                            log.warning("CrowdSec: 200 but no token: %s", body[:200])
-                            return None, f"HTTP 200 but no token in response: {body[:200]}"
-                        self._jwt = token
-                        self._jwt_expires = datetime.now(timezone.utc) + timedelta(hours=23)
-                        log.info("CrowdSec: logged in as '%s'", machine_id)
-                        return self._jwt, None
-                    log.warning("CrowdSec login failed (%d): %s", resp.status, body[:300])
-                    return None, f"HTTP {resp.status}: {body[:300]}"
-        except Exception as e:
-            log.warning("CrowdSec login error: %s", e)
-            return None, str(e)
-
-    async def _get_jwt(self) -> Optional[str]:
-        async with self._lock:
-            now = datetime.now(timezone.utc)
-            if self._jwt and self._jwt_expires and now < self._jwt_expires:
-                return self._jwt
-            token, _ = await self._login()
-            return token
-
-    async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
-        """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
-        if not self.enabled:
-            return
-        jwt = await self._get_jwt()
-        if not jwt:
-            return
-        url = self._state.crowdsec_lapi_url.rstrip("/")
+    def _build_alert_payload(self, ip: str, duration_minutes: int, reason: str) -> list:
         now = datetime.now(timezone.utc)
-        stop_at = (now + timedelta(minutes=max(1, duration_minutes))).strftime("%Y-%m-%dT%H:%M:%SZ")
-        start_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        stop_at   = (now + timedelta(minutes=max(1, duration_minutes))).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start_at  = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         duration_str = f"{max(1, duration_minutes)}m"
-        payload = [{
+        return [{
             "message": reason,
-            "events": [{
-                "timestamp": start_at,
-                "meta": [{"key": "source_ip", "value": ip}],
-            }],
+            "events": [{"timestamp": start_at, "meta": [{"key": "source_ip", "value": ip}]}],
             "stop_at": stop_at,
             "start_at": start_at,
             "capacity": -1,
@@ -756,54 +709,120 @@ class CrowdSecManager:
                 "value": ip,
             }],
         }]
-        await self._post_alerts(url, payload, jwt, ip)
 
-    async def _post_alerts(self, url: str, payload: list, jwt: str, ip: str):
+    async def _post_alert(self, url: str, payload: list, headers: dict) -> tuple:
+        """POST /v1/alerts. Returns (ok_bool, status_int, body_str)."""
         try:
-            async with aiohttp_client.ClientSession() as session:
+            connector = aiohttp_client.TCPConnector(ssl=False)
+            async with aiohttp_client.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{url}/v1/alerts",
                     json=payload,
-                    headers={"Authorization": f"Bearer {jwt}"},
+                    headers=headers,
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 ) as resp:
-                    if resp.status in (200, 201):
-                        log.info("CrowdSec: decision submitted for %s", ip)
-                        return
-                    if resp.status == 401:
-                        # Token expired — invalidate and retry once
-                        self._jwt = None
-                        jwt2 = await self._get_jwt()
-                        if jwt2:
-                            async with session.post(
-                                f"{url}/v1/alerts",
-                                json=payload,
-                                headers={"Authorization": f"Bearer {jwt2}"},
-                                timeout=aiohttp_client.ClientTimeout(total=10),
-                            ) as resp2:
-                                if resp2.status in (200, 201):
-                                    log.info("CrowdSec: decision submitted for %s (retry)", ip)
-                                    return
-                                log.warning("CrowdSec: submit failed after retry (%d)", resp2.status)
-                        return
                     body = await resp.text()
-                    log.warning("CrowdSec: alert submit failed (%d): %s", resp.status, body[:200])
+                    return resp.status in (200, 201), resp.status, body
         except Exception as e:
-            log.warning("CrowdSec: submit error for %s: %s", ip, e)
+            return False, 0, str(e)
+
+    async def submit_ban(self, ip: str, duration_minutes: int, reason: str):
+        """Submit a ban decision to CrowdSec (best-effort, non-blocking)."""
+        if not self.enabled:
+            return
+        url = self._state.crowdsec_lapi_url.rstrip("/")
+        payload = self._build_alert_payload(ip, duration_minutes, reason)
+
+        # Try trusted-IP mode first (no auth — CrowdSec grants admin access
+        # to 172.30.32.0/23 via trusted_ips config)
+        ok, status, body = await self._post_alert(url, payload, {})
+        if ok:
+            log.info("CrowdSec: decision submitted for %s (trusted-IP mode)", ip)
+            return
+        log.debug("CrowdSec: trusted-IP mode failed (%d) — %s", status, body[:100])
+
+        # Fall back to machine login + JWT
+        async with self._lock:
+            now = datetime.now(timezone.utc)
+            if not (self._jwt and self._jwt_expires and now < self._jwt_expires):
+                self._jwt, _ = await self._login()
+        if not self._jwt:
+            return
+        ok, status, body = await self._post_alert(url, payload, {"Authorization": f"Bearer {self._jwt}"})
+        if ok:
+            log.info("CrowdSec: decision submitted for %s (JWT mode)", ip)
+        else:
+            log.warning("CrowdSec: submit failed for %s (%d): %s", ip, status, body[:200])
+
+    async def _login(self) -> tuple:
+        """Returns (token_or_None, error_str_or_None)."""
+        url = self._state.crowdsec_lapi_url.rstrip("/")
+        machine_id = self._state.crowdsec_machine_id
+        password = self._state.crowdsec_machine_password
+        try:
+            connector = aiohttp_client.TCPConnector(ssl=False)
+            async with aiohttp_client.ClientSession(connector=connector) as session:
+                async with session.post(
+                    f"{url}/v1/watchers/login",
+                    json={"machine_id": machine_id, "password": password, "scenarios": []},
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status == 200:
+                        data = json.loads(body)
+                        token = data.get("token")
+                        if not token:
+                            return None, f"HTTP 200 but no token: {body[:200]}"
+                        self._jwt = token
+                        self._jwt_expires = datetime.now(timezone.utc) + timedelta(hours=23)
+                        log.info("CrowdSec: logged in as '%s'", machine_id)
+                        return self._jwt, None
+                    log.warning("CrowdSec login failed (%d): %s", resp.status, body[:300])
+                    return None, f"HTTP {resp.status}: {body[:300]}"
+        except Exception as e:
+            log.warning("CrowdSec login error: %s", e)
+            return None, str(e)
 
     async def test_connection(self, url: str = None, machine_id: str = None, password: str = None) -> dict:
-        """Test login with given or stored credentials."""
+        """Test connectivity. Tries trusted-IP mode first, then machine login."""
         test_url = (url or self._state.crowdsec_lapi_url or "").rstrip("/")
-        test_id   = machine_id or self._state.crowdsec_machine_id or ""
-        test_pw   = password or self._state.crowdsec_machine_password or ""
         if not test_url:
             return {"ok": False, "error": "LAPI URL not configured"}
+
+        # 1) Reachability check via GET /v1/heartbeat
+        try:
+            connector = aiohttp_client.TCPConnector(ssl=False)
+            async with aiohttp_client.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{test_url}/v1/heartbeat",
+                    timeout=aiohttp_client.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status not in (200, 401, 403):
+                        body = await resp.text()
+                        return {"ok": False, "error": f"LAPI not reachable: HTTP {resp.status}: {body[:100]}"}
+        except Exception as e:
+            return {"ok": False, "error": f"Cannot reach LAPI: {e}"}
+
+        # 2) Try trusted-IP mode: GET /v1/decisions (no auth)
+        try:
+            connector = aiohttp_client.TCPConnector(ssl=False)
+            async with aiohttp_client.ClientSession(connector=connector) as session:
+                async with session.get(
+                    f"{test_url}/v1/decisions",
+                    timeout=aiohttp_client.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status == 200:
+                        return {"ok": True, "message": "Connected via trusted-IP (no auth required) — decisions will be submitted automatically"}
+        except Exception:
+            pass
+
+        # 3) Try machine login
+        test_id = machine_id or self._state.crowdsec_machine_id or ""
+        test_pw = password or self._state.crowdsec_machine_password or ""
         if not test_id:
-            return {"ok": False, "error": "Machine ID not configured"}
+            return {"ok": False, "error": "Trusted-IP mode failed and Machine ID not configured"}
         if not test_pw:
-            return {"ok": False, "error": "Password not configured — enter it in the field and click Test"}
-        log.info("CrowdSec test: POST %s/v1/watchers/login id=%s pw_len=%d pw_start=%s",
-                 test_url, test_id, len(test_pw), test_pw[:2])
+            return {"ok": False, "error": "Trusted-IP mode failed — enter Machine ID and Password for login mode"}
         try:
             connector = aiohttp_client.TCPConnector(ssl=False)
             async with aiohttp_client.ClientSession(connector=connector) as session:
@@ -813,15 +832,14 @@ class CrowdSecManager:
                     timeout=aiohttp_client.ClientTimeout(total=10),
                 ) as resp:
                     body = await resp.text()
-                    log.info("CrowdSec test response: %d — %s", resp.status, body[:200])
+                    log.info("CrowdSec login test (%d): %s", resp.status, body[:200])
                     if resp.status == 200:
                         data = json.loads(body)
                         if data.get("token"):
-                            return {"ok": True, "message": f"Login successful as '{test_id}'"}
+                            return {"ok": True, "message": f"Connected via machine login as '{test_id}'"}
                         return {"ok": False, "error": f"HTTP 200 but no token: {body[:200]}"}
-                    return {"ok": False, "error": f"HTTP {resp.status}: {body[:300]}"}
+                    return {"ok": False, "error": f"Login failed: HTTP {resp.status}: {body[:300]}"}
         except Exception as e:
-            log.warning("CrowdSec test exception: %s", e)
             return {"ok": False, "error": str(e)}
 
 
