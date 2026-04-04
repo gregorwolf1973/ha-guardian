@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.23.7"
+VERSION = "1.23.8"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -803,18 +803,20 @@ class CrowdSecManager:
         except Exception as e:
             return {"ok": False, "error": f"Cannot reach LAPI: {e}"}
 
-        # 2) Try trusted-IP mode: GET /v1/decisions (no auth)
+        # 2) Try trusted-IP mode: GET /v1/alerts (machine endpoint, no auth needed for trusted IPs)
         try:
             connector = aiohttp_client.TCPConnector(ssl=False)
             async with aiohttp_client.ClientSession(connector=connector) as session:
                 async with session.get(
-                    f"{test_url}/v1/decisions",
+                    f"{test_url}/v1/alerts",
                     timeout=aiohttp_client.ClientTimeout(total=5),
                 ) as resp:
+                    body = await resp.text()
+                    log.info("CrowdSec trusted-IP test: GET /v1/alerts → %d: %s", resp.status, body[:100])
                     if resp.status == 200:
                         return {"ok": True, "message": "Connected via trusted-IP (no auth required) — decisions will be submitted automatically"}
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("CrowdSec trusted-IP test failed: %s", e)
 
         # 3) Try machine login
         test_id = machine_id or self._state.crowdsec_machine_id or ""
