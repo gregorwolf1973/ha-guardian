@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.6"
+VERSION = "1.24.7"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -717,20 +717,20 @@ class CrowdSecManager:
 
     def _build_alert_payload(self, ip: str, duration_minutes: int, reason: str) -> list:
         now = datetime.now(timezone.utc)
-        start_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        # CrowdSec computes: until = stop_at + decision.duration
-        # So stop_at carries the full ban duration, decision.duration = "1s" (minimal)
+        now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # CrowdSec uses decision.duration for ban expiry (until = created_at + duration).
+        # stop_at is just alert metadata — set to same as start_at.
         if duration_minutes > 0:
-            stop_at = (now + timedelta(minutes=duration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            duration_str = f"{duration_minutes}m0s"
         else:
             # 0 = permanent in Guardian → 10 years in CrowdSec
-            stop_at = (now + timedelta(hours=87600)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            duration_str = "87600h0m0s"
         return [{
             "message": reason,
-            "events": [{"timestamp": start_at, "meta": [{"key": "source_ip", "value": ip}]}],
+            "events": [{"timestamp": now_str, "meta": [{"key": "source_ip", "value": ip}]}],
             "events_count": 1,
-            "stop_at": stop_at,
-            "start_at": start_at,
+            "stop_at": now_str,
+            "start_at": now_str,
             "capacity": -1,
             "leakspeed": "0s",
             "simulated": False,
@@ -739,7 +739,7 @@ class CrowdSecManager:
             "scenario_version": VERSION,
             "scenario_hash": "",
             "decisions": [{
-                "duration": "1s",
+                "duration": duration_str,
                 "origin": "ha-guardian",
                 "scenario": "guardian/brute-force",
                 "scope": "ip",
