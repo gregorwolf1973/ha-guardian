@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.25.0 – 2026-04-04
+
+### Changed
+- All documentation (README, DOCS, CHANGELOG) translated to English
+- German README available as README.de.md
+
 ## 1.24.8 – 2026-04-04
 
 ### Fixed

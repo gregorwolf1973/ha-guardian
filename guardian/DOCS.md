@@ -1,161 +1,161 @@
-# HA Guardian – Dokumentation
+# HA Guardian – Documentation
 
-Brute-force-Schutz für Home Assistant: überwacht Logs aller installierten Addons, erkennt fehlgeschlagene Anmeldeversuche und sperrt angreifende IPs automatisch über `ip_bans.yaml` (Application Layer) und optional via **CrowdSec LAPI** (Network Layer).
-
----
-
-## Schnellstart
-
-1. Addon starten und über **Web-UI öffnen** aufrufen
-2. Im Tab **Addons** die gewünschten Log-Quellen per Toggle **aktivieren**
-3. Im Tab **Whitelist** die eigene IP schützen (Auto-Whitelist wird beim ersten Öffnen angeboten)
-4. Fertig – Guardian überwacht die aktivierten Quellen
+Brute-force protection for Home Assistant: monitors logs of all installed addons, detects failed login attempts and automatically bans attacking IPs via `ip_bans.yaml` (Application Layer) and optionally via **CrowdSec LAPI** (Network Layer).
 
 ---
 
-## Konfigurationsoptionen
+## Quick Start
 
-| Option | Standard | Beschreibung |
+1. Start the addon and open via **Open Web UI**
+2. In the **Addons** tab, enable desired log sources via toggle
+3. In the **Whitelist** tab, protect your own IP (auto-whitelist is offered on first open)
+4. Done – Guardian monitors the enabled sources
+
+---
+
+## Configuration
+
+| Option | Default | Description |
 |---|---|---|
-| `max_attempts` | `5` | Fehlversuche vor dem Bann |
-| `window_minutes` | `5` | Zeitfenster für die Erkennung (Minuten) |
-| `ban_duration_minutes` | `240` | Sperrdauer in Minuten (`0` = dauerhaft) |
-| `alert_window_hours` | `24` | Zeitraum für die Dashboard-Anzeige (Stunden) |
-| `log_file` | `/config/home-assistant.log` | Pfad zur HA-Core-Log-Datei |
+| `max_attempts` | `5` | Failed attempts before ban |
+| `window_minutes` | `5` | Detection time window (minutes) |
+| `ban_duration_minutes` | `240` | Ban duration in minutes (`0` = permanent) |
+| `alert_window_hours` | `24` | Time range for dashboard display (hours) |
+| `log_file` | `/config/home-assistant.log` | Path to HA Core log file |
 
-> Alle Einstellungen können auch komfortabel im **Settings-Tab** der Web-UI geändert werden.
-
----
-
-## Kompatibilität mit HA's eingebautem Bann-Mechanismus
-
-Guardian und HA's `ip_ban_enabled` arbeiten unabhängig und können gleichzeitig aktiv sein. HA schützt nur die eigene Weboberfläche, Guardian zusätzlich alle überwachten Addons. Kein Konflikt, kein Handlungsbedarf.
+> All settings can also be changed in the **Settings tab** of the Web UI.
 
 ---
 
-## Addons-Tab – welche Log-Quellen aktivieren?
+## Compatibility with HA's Built-in Ban Mechanism
 
-### ⚡ Nginx Proxy Manager – wichtigste Quelle
+Guardian and HA's `ip_ban_enabled` work independently and can be active simultaneously. HA only protects its own web interface, Guardian additionally protects all monitored addons. No conflict, no action needed.
 
-Da aller externer Traffic über den HA-internen Proxy (`172.30.32.1`) läuft, enthält der Docker-Log der meisten Addons **nicht** die echte Angreifer-IP. Nginx Proxy Manager (NPM) liegt vor diesem Proxy und schreibt die echte Client-IP in seinen Log:
+---
+
+## Addons Tab – Which Log Sources to Enable?
+
+### ⚡ Nginx Proxy Manager – Most Important Source
+
+Since all external traffic passes through HA's internal proxy (`172.30.32.1`), the Docker log of most addons does **not** contain the real attacker IP. Nginx Proxy Manager (NPM) sits in front of this proxy and logs the real client IP:
 
 ```
-[Client 91.42.192.232]  ← echte IP, nur in NPM sichtbar
+[Client 91.42.192.232]  ← real IP, only visible in NPM
 ```
 
-**NPM-Logging aktivieren:** NPM Web-UI → Settings → Default Site → Access Log ✓
+**Enable NPM logging:** NPM Web UI → Settings → Default Site → Access Log ✓
 
-### Welche Quelle für welchen Dienst?
+### Which Source for Which Service?
 
-| Dienst | Empfohlene Quelle |
+| Service | Recommended Source |
 |---|---|
-| Home Assistant Core | Datei `/config/home-assistant.log` (standardmäßig aktiv) |
-| Nginx Proxy Manager | `Docker: Nginx Proxy Manager` ← wichtigste Quelle |
-| 2FAuth | NPM (externe Zugriffe) + `Docker: 2FAuth` |
+| Home Assistant Core | File `/config/home-assistant.log` (active by default) |
+| Nginx Proxy Manager | `Docker: Nginx Proxy Manager` ← most important source |
+| 2FAuth | NPM (external access) + `Docker: 2FAuth` |
 | Vaultwarden | `Docker: Vaultwarden` + NPM |
-| DokuWiki | `Docker: DokuWiki` + ggf. `auth.log`-Datei |
+| DokuWiki | `Docker: DokuWiki` + optionally `auth.log` file |
 | Nextcloud | `Docker: Nextcloud` |
-| Webtrees | NPM (Webtrees gibt HTTP 200 bei Fehllogin) |
+| Webtrees | NPM (Webtrees returns HTTP 200 on failed login) |
 
-> **Faustregel:** Wenn ein Addon nur `172.30.32.1` als Client-IP loggt → NPM aktivieren.
+> **Rule of thumb:** If an addon only logs `172.30.32.1` as client IP → enable NPM.
 
 ### Log File Search
 
-Im Addons-Tab gibt es eine **Dateisuche**: Dateiname eingeben (z. B. `auth.log`) → findet alle passenden Logs in allen Addon-Verzeichnissen.
+The Addons tab has a **file search**: enter a filename (e.g. `auth.log`) → finds all matching logs across all addon directories.
 
 ---
 
-## Bans wirken in Echtzeit
+## Bans Take Effect in Real Time
 
-Home Assistant überwacht `ip_bans.yaml` auf Änderungen. Neue Bans von Guardian werden **sofort** ohne Neustart aktiv.
+Home Assistant monitors `ip_bans.yaml` for changes. New bans from Guardian become active **immediately** without restart.
 
 ---
 
 ## Ban Targets
 
-Im Settings-Tab unter **Ban Targets** kann festgelegt werden, wohin Bans geschrieben werden:
+Under **Ban Targets** in the Settings tab you can choose where bans are written:
 
-- **ip_bans.yaml** (Standard: an) – HA's nativer Sperrmechanismus
-- **CrowdSec** (Standard: an) – sendet Bans an die CrowdSec LAPI für Network-Layer-Blocking
+- **ip_bans.yaml** (default: on) – HA's native ban mechanism
+- **CrowdSec** (default: on) – sends bans to CrowdSec LAPI for network-layer blocking
 
-Beide Targets sind unabhängig voneinander schaltbar.
+Both targets can be toggled independently.
 
 ---
 
 ## CrowdSec LAPI Integration
 
-Guardian kann Bans direkt an die CrowdSec Local API senden. Voraussetzungen:
+Guardian can send bans directly to the CrowdSec Local API. Prerequisites:
 
-1. CrowdSec Addon installiert und gestartet
-2. Machine-Account anlegen: `cscli machines add ha-guardian --password <passwort>`
-3. In Guardian Settings: LAPI URL, Machine ID und Passwort (Klartext) eintragen
-4. **Test Connection** → bei Erfolg ist die Integration aktiv
+1. CrowdSec addon installed and running
+2. Create machine account: `cscli machines add ha-guardian --password <password>`
+3. In Guardian Settings: enter LAPI URL, Machine ID and password (plaintext)
+4. **Test Connection** → on success the integration is active
 
-Bei jedem Ban/Unban wird automatisch eine Decision in CrowdSec erstellt bzw. entfernt. Ban-Dauer wird 1:1 übergeben (0 = dauerhaft → 10 Jahre in CrowdSec).
+On every ban/unban a decision is automatically created or removed in CrowdSec. Ban duration is passed 1:1 (0 = permanent → 10 years in CrowdSec).
 
 ---
 
 ## Health Check
 
-Der **Health Check**-Button im Addons-Tab prüft alle aktivierten Quellen auf Aktualität:
-- **ok** (grün) – Einträge in den letzten 7 Tagen vorhanden
-- **stale** (rot) – keine aktuellen Einträge
-- **empty** (grau) – Quelle leer oder nicht lesbar
+The **Health Check** button in the Addons tab checks all enabled sources for freshness:
+- **ok** (green) – entries within the last 7 days
+- **stale** (red) – no recent entries
+- **empty** (grey) – source empty or unreadable
 
 ---
 
 ## Unused Sources
 
-Erkannte aber nicht benötigte Log-Dateien können über **Reassign → Unused** als ungenutzt markiert werden. Sie erscheinen ausgegraut und werden nicht überwacht.
+Discovered but unneeded log files can be marked as unused via **Reassign → Unused**. They appear greyed out and are not monitored.
 
 ---
 
-## Rules-Tab
+## Rules Tab
 
-Alle Erkennungsregeln können hier verwaltet werden:
+All detection rules can be managed here:
 
-- **Toggle** – Regel ein-/ausschalten
-- **Edit** – Pattern und Beschreibung anpassen (mit Live-Tester)
-- **Copy** – als Basis für neue Regel verwenden
-- **Delete** – Regel entfernen
-- **Werkseinstellungen** – alle Regeln zurücksetzen
+- **Toggle** – enable/disable rule
+- **Edit** – modify pattern and description (with live tester)
+- **Copy** – use as basis for new rule
+- **Delete** – remove rule
+- **Factory Reset** – reset all rules to defaults
 
-### Eigene Regel erstellen
+### Creating Custom Rules
 
-Regex-Pattern mit Capture-Group für die IP-Adresse:
+Regex pattern with capture group for the IP address:
 ```
 Login failed.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
 ```
 
 ---
 
-## Whitelist-Tab
+## Whitelist Tab
 
-- **Auto-Whitelist**: eigene öffentliche IP wird automatisch beim Öffnen der UI erkannt und eingetragen. Bei IP-Wechsel wird automatisch aktualisiert.
-- **Manuell**: einzelne IPs (`1.2.3.4`) oder CIDR-Bereiche (`192.168.178.0/24`)
-- Interne Adressen (`127.0.0.1`, `172.30.32.0/24`, `192.168.0.0/16`) sind standardmäßig geschützt
-
----
-
-## Häufige Fragen
-
-**Ban erscheint in der Liste, IP ist aber nicht gesperrt?**
-→ HA überwacht `ip_bans.yaml` in Echtzeit, kein Neustart nötig. Prüfe ob die IP wirklich in `ip_bans.yaml` im Konfigurationsverzeichnis eingetragen ist.
-
-**Keine Alerts obwohl Fehllogins passieren?**
-→ Im Addons-Tab prüfen ob die richtige Quelle aktiviert ist. Bei externen Zugriffen: NPM aktivieren.
-
-**Wie finde ich die Log-Datei eines Addons?**
-→ Addons-Tab → Log File Search → Dateiname eingeben.
-
-**Wie funktioniert die CrowdSec-Integration?**
-→ Guardian sendet Bans direkt an die CrowdSec LAPI als Machine-Watcher. Einrichtung: siehe CrowdSec LAPI Integration oben.
-
-**Kann ich Guardian parallel zu CrowdSec betreiben?**
-→ Ja! Guardian registriert sich als Machine und sendet Bans an die LAPI. CrowdSec-eigene Szenarien und Guardian-Bans ergänzen sich.
+- **Auto-whitelist**: your public IP is automatically detected and added when opening the UI. Updated automatically on IP change.
+- **Manual**: single IPs (`1.2.3.4`) or CIDR ranges (`192.168.178.0/24`)
+- Internal addresses (`127.0.0.1`, `172.30.32.0/24`, `192.168.0.0/16`) are protected by default
 
 ---
 
-Vollständige Dokumentation und Quellcode: [github.com/gregorwolf1973/ha-guardian](https://github.com/gregorwolf1973/ha-guardian)
+## FAQ
+
+**Ban appears in the list but IP isn't blocked?**
+→ HA monitors `ip_bans.yaml` in real time, no restart needed. Check that the IP is actually in `ip_bans.yaml` in the config directory.
+
+**No alerts even though failed logins are happening?**
+→ Check the Addons tab to see if the correct source is enabled. For external access: enable NPM.
+
+**How do I find the log file of an addon?**
+→ Addons tab → Log File Search → enter filename.
+
+**How does the CrowdSec integration work?**
+→ Guardian sends bans directly to the CrowdSec LAPI as a machine watcher. See CrowdSec LAPI Integration above for setup.
+
+**Can I run Guardian alongside CrowdSec?**
+→ Yes! Guardian registers as a machine and sends bans to the LAPI. CrowdSec's own scenarios and Guardian bans complement each other.
+
+---
+
+Full documentation and source code: [github.com/gregorwolf1973/ha-guardian](https://github.com/gregorwolf1973/ha-guardian)
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/gregorwolf1973)
