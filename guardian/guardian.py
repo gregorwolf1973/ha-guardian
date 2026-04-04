@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.24.5"
+VERSION = "1.24.6"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -718,12 +718,12 @@ class CrowdSecManager:
     def _build_alert_payload(self, ip: str, duration_minutes: int, reason: str) -> list:
         now = datetime.now(timezone.utc)
         start_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        # 0 = permanent in Guardian → 10 years in CrowdSec
+        # CrowdSec computes: until = stop_at + decision.duration
+        # So stop_at carries the full ban duration, decision.duration = "1s" (minimal)
         if duration_minutes > 0:
-            duration_str = f"{duration_minutes}m"
             stop_at = (now + timedelta(minutes=duration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
-            duration_str = "87600h"
+            # 0 = permanent in Guardian → 10 years in CrowdSec
             stop_at = (now + timedelta(hours=87600)).strftime("%Y-%m-%dT%H:%M:%SZ")
         return [{
             "message": reason,
@@ -739,7 +739,7 @@ class CrowdSecManager:
             "scenario_version": VERSION,
             "scenario_hash": "",
             "decisions": [{
-                "duration": duration_str,
+                "duration": "1s",
                 "origin": "ha-guardian",
                 "scenario": "guardian/brute-force",
                 "scope": "ip",
