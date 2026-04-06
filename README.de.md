@@ -7,6 +7,12 @@
 </p>
 
 <p align="center">
+  <a href="https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fgregorwolf1973%2Fha-guardian">
+    <img src="https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg" alt="Repository zu Home Assistant hinzufügen">
+  </a>
+</p>
+
+<p align="center">
   <a href="https://buymeacoffee.com/gregorwolf1973">
     <img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee">
   </a>
