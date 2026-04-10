@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.26.0 – 2026-04-10
+
+### Added
+- **Configurable log discovery interval**: Guardian now periodically searches for new log files and addon sources. Interval is configurable in minutes via the Settings tab (default: 15 minutes, previously hardcoded to 5 minutes).
+
 ## 1.25.0 – 2026-04-04
 
 ### Changed

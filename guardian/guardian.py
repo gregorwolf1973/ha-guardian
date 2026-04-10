@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.25.0"
+VERSION = "1.26.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -544,6 +544,7 @@ class Config:
         self.scan_interval_seconds: int = 1
         self.addon_poll_interval: int = 15
         self.log_interval_minutes: int = 5
+        self.discover_interval_minutes: int = 15
         self.log_file: str = LOG_FILE_DEFAULT
         self._load()
 
@@ -559,6 +560,7 @@ class Config:
             self.scan_interval_seconds = max(1, int(d.get("scan_interval_seconds", 1)))
             self.addon_poll_interval = max(5, int(d.get("addon_poll_interval", 15)))
             self.log_interval_minutes = max(1, int(d.get("log_interval_minutes", 5)))
+            self.discover_interval_minutes = max(1, int(d.get("discover_interval_minutes", 15)))
             self.log_file = d.get("log_file", LOG_FILE_DEFAULT)
 
             # Seed state from options.json if state has empty whitelist
@@ -591,6 +593,8 @@ class Config:
             self.addon_poll_interval = max(5, int(ov["addon_poll_interval"]))
         if "log_interval_minutes" in ov:
             self.log_interval_minutes = max(1, int(ov["log_interval_minutes"]))
+        if "discover_interval_minutes" in ov:
+            self.discover_interval_minutes = max(1, int(ov["discover_interval_minutes"]))
 
     # HA internal networks that should never be banned
     HA_DEFAULT_WHITELIST = [
@@ -635,6 +639,7 @@ class Config:
         self._state.set_override("scan_interval_seconds", self.scan_interval_seconds)
         self._state.set_override("addon_poll_interval", self.addon_poll_interval)
         self._state.set_override("log_interval_minutes", self.log_interval_minutes)
+        self._state.set_override("discover_interval_minutes", self.discover_interval_minutes)
         # Whitelist and trusted_domains are auto-saved via property setters
 
     def to_dict(self) -> dict:
@@ -646,6 +651,7 @@ class Config:
             "scan_interval_seconds": self.scan_interval_seconds,
             "addon_poll_interval": self.addon_poll_interval,
             "log_interval_minutes": self.log_interval_minutes,
+            "discover_interval_minutes": self.discover_interval_minutes,
             "log_file": self.log_file,
             "whitelist": self.whitelist,
             "trusted_domains": self.trusted_domains,
@@ -2407,7 +2413,10 @@ class LogScanner:
 
     async def rediscover_loop(self):
         while True:
-            await asyncio.sleep(300)
+            interval = max(60, self.config.discover_interval_minutes * 60)
+            await asyncio.sleep(interval)
+            log.info("Periodic log source discovery (interval=%d min)",
+                     self.config.discover_interval_minutes)
             await self.source_mgr.discover()
 
 
@@ -2591,6 +2600,8 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config.addon_poll_interval = max(5, int(d["addon_poll_interval"]))
         if "log_interval_minutes" in d:
             config.log_interval_minutes = max(1, int(d["log_interval_minutes"]))
+        if "discover_interval_minutes" in d:
+            config.discover_interval_minutes = max(1, int(d["discover_interval_minutes"]))
         if "trusted_domains" in d:
             config.trusted_domains = [s.strip() for s in d["trusted_domains"] if s.strip()]
         # CrowdSec settings (stored in persistent state, not in options.json)

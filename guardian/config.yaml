@@ -1,5 +1,5 @@
 name: "HA Guardian"
-version: "1.25.1"
+version: "1.26.0"
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs via ip_bans.yaml (application layer) with optional network-level blocking"
 url: "https://github.com/gregorwolf1973/ha-guardian"
@@ -42,6 +42,7 @@ options:
   scan_interval_seconds: 1
   addon_poll_interval: 15
   log_interval_minutes: 5
+  discover_interval_minutes: 15
   log_file: "/config/home-assistant.log"
 schema:
   max_attempts: "int(1,100)"
@@ -51,4 +52,5 @@ schema:
   scan_interval_seconds: "int(1,60)"
   addon_poll_interval: "int(5,300)"
   log_interval_minutes: "int(1,60)"
+  discover_interval_minutes: "int(1,1440)"
   log_file: str

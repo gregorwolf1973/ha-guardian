@@ -447,6 +447,11 @@
           <div class="hint">How often addon Docker logs are polled.</div>
         </div>
         <div class="form-row">
+          <label>Log discovery interval (minutes)</label>
+          <input id="cfgDiscoverInterval" type="number" min="1" max="1440">
+          <div class="hint">How often Guardian searches for new log files and addon sources.</div>
+        </div>
+        <div class="form-row">
           <label>Status log interval (minutes)</label>
           <input id="cfgLogInterval" type="number" min="1" max="60">
           <div class="hint">How often a status summary is written to the Guardian log.</div>
@@ -1166,6 +1171,7 @@ async function loadSettings() {
     document.getElementById('cfgAlertHours').value = c.alert_window_hours;
     document.getElementById('cfgScanInterval').value = c.scan_interval_seconds || 1;
     document.getElementById('cfgAddonPoll').value = c.addon_poll_interval || 15;
+    document.getElementById('cfgDiscoverInterval').value = c.discover_interval_minutes || 15;
     document.getElementById('cfgLogInterval').value = c.log_interval_minutes || 5;
     _renderDomainChips(c.trusted_domains || []);
     // Ban targets
@@ -1276,6 +1282,7 @@ async function saveSettings(ev) {
       alert_window_hours: parseInt(document.getElementById('cfgAlertHours').value),
       scan_interval_seconds: parseInt(document.getElementById('cfgScanInterval').value),
       addon_poll_interval: parseInt(document.getElementById('cfgAddonPoll').value),
+      discover_interval_minutes: parseInt(document.getElementById('cfgDiscoverInterval').value),
       log_interval_minutes: parseInt(document.getElementById('cfgLogInterval').value),
       trusted_domains: _getCurrentDomains(),
       ban_to_ipbans: document.getElementById('cfgBanIpbans').checked,
