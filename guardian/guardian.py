@@ -2464,23 +2464,38 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
                 # Await CrowdSec directly so we can return its result
                 cs_result = None
                 if crowdsec_mgr and config._state.ban_to_crowdsec:
-                    cs_result = await crowdsec_mgr.submit_ban(ip, dur, reason)
+                    try:
+                        cs_result = await crowdsec_mgr.submit_ban(ip, dur, reason)
+                    except Exception as e:
+                        log.error("CrowdSec submit_ban error for %s: %s", ip, e)
+                        cs_result = {"ok": False, "error": str(e)}
                 return web.json_response({"ok": True, "crowdsec": cs_result})
             return web.json_response({"ok": False, "error": "IP is whitelisted"}, status=400)
         except (ValueError, TypeError) as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
+        except Exception as e:
+            log.error("Error in handle_post_ban: %s", e)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_delete_ban(req):
         ip = req.match_info["ip"]
-        ok = await bans.unban(ip, skip_crowdsec=True)
-        if ok:
-            # Clear the detector window so counter restarts from 0
-            detector.clear_window(ip)
-            cs_result = None
-            if crowdsec_mgr and config._state.ban_to_crowdsec:
-                cs_result = await crowdsec_mgr.delete_ban(ip)
-            return web.json_response({"ok": True, "crowdsec": cs_result})
-        return web.json_response({"ok": False, "error": "not found"}, status=404)
+        try:
+            ok = await bans.unban(ip, skip_crowdsec=True)
+            if ok:
+                # Clear the detector window so counter restarts from 0
+                detector.clear_window(ip)
+                cs_result = None
+                if crowdsec_mgr and config._state.ban_to_crowdsec:
+                    try:
+                        cs_result = await crowdsec_mgr.delete_ban(ip)
+                    except Exception as e:
+                        log.error("CrowdSec delete_ban error for %s: %s", ip, e)
+                        cs_result = {"ok": False, "error": str(e)}
+                return web.json_response({"ok": True, "crowdsec": cs_result})
+            return web.json_response({"ok": False, "error": "not found"}, status=404)
+        except Exception as e:
+            log.error("Error in handle_delete_ban for %s: %s", ip, e)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def handle_get_whitelist(req):
         return web.json_response(config.whitelist)
