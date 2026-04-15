@@ -820,6 +820,18 @@ class CrowdSecManager:
         if ok:
             log.info("CrowdSec: decision submitted for %s (JWT mode)", ip)
             return {"ok": True, "mode": "jwt"}
+        # Token rejected — force re-login and retry once
+        if status == 401:
+            log.info("CrowdSec: JWT rejected (401) — forcing re-login for %s", ip)
+            async with self._lock:
+                self._jwt = None
+                self._jwt_expires = None
+                self._jwt, _ = await self._login()
+            if self._jwt:
+                ok, status, body = await self._post_alert(url, payload, {"Authorization": f"Bearer {self._jwt}"})
+                if ok:
+                    log.info("CrowdSec: decision submitted for %s (JWT retry)", ip)
+                    return {"ok": True, "mode": "jwt-retry"}
         log.warning("CrowdSec: submit failed for %s (%d): %s", ip, status, body[:200])
         return {"ok": False, "error": f"HTTP {status}: {body[:200]}"}
 
@@ -856,6 +868,21 @@ class CrowdSecManager:
         if status in (200, 201):
             log.info("CrowdSec: decisions deleted for %s (JWT mode)", ip)
             return {"ok": True, "mode": "jwt"}
+        # Token rejected — force re-login and retry once
+        if status == 401:
+            log.info("CrowdSec: JWT rejected (401) — forcing re-login for delete %s", ip)
+            async with self._lock:
+                self._jwt = None
+                self._jwt_expires = None
+                self._jwt, _ = await self._login()
+            if self._jwt:
+                status, body = await asyncio.to_thread(
+                    self._http_request, endpoint, "DELETE", None,
+                    {"Authorization": f"Bearer {self._jwt}"}
+                )
+                if status in (200, 201):
+                    log.info("CrowdSec: decisions deleted for %s (JWT retry)", ip)
+                    return {"ok": True, "mode": "jwt-retry"}
         log.warning("CrowdSec: DELETE failed for %s (%d): %s", ip, status, body[:200])
         return {"ok": False, "error": f"HTTP {status}: {body[:200]}"}
 
