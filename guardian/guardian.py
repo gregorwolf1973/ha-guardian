@@ -2442,9 +2442,14 @@ class LogScanner:
         while True:
             interval = max(60, self.config.discover_interval_minutes * 60)
             await asyncio.sleep(interval)
-            log.info("Periodic log source discovery (interval=%d min)",
-                     self.config.discover_interval_minutes)
-            await self.source_mgr.discover()
+            try:
+                log.info("Periodic log source discovery (interval=%d min)",
+                         self.config.discover_interval_minutes)
+                await self.source_mgr.discover()
+                log.info("Periodic discovery complete — %d total sources",
+                         len(self.source_mgr.get_all()))
+            except Exception as e:
+                log.error("Periodic discovery failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
