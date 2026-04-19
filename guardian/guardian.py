@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.27.1"
+VERSION = "1.27.2"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -168,8 +168,15 @@ DEFAULT_RULE_DEFS = [
     },
     {
         "id": "webtrees_fail",
-        "description": "Webtrees: failed login POST redirect (HTTP 302)",
-        "pattern": r"(\d{1,3}(?:\.\d{1,3}){3}).*\"POST\s+/login[^\"]*\s+HTTP/\S+\"\s+302\s",
+        "description": "Webtrees via NPM: POST /login → 302 redirect (failed login)",
+        "pattern": r"- 302 302 - POST https?\s+\S+\s+\"/login[^\"]*\"\s.*\[Client\s+(\d{1,3}(?:\.\d{1,3}){3})\]",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "webtrees_fail_redirect",
+        "description": "Webtrees via NPM: GET /login?username= → 200 (login page shown again after failure)",
+        "pattern": r"- 200 200 - GET https?\s+\S+\s+\"/login\?username=[^\"]+\"\s.*\[Client\s+(\d{1,3}(?:\.\d{1,3}){3})\]",
         "flags": "IGNORECASE",
         "enabled": True,
     },
