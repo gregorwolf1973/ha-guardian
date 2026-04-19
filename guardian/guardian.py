@@ -190,7 +190,7 @@ DEFAULT_RULE_DEFS = [
     {
         "id": "2fauth_login",
         "description": "2FAuth NPM proxy: 500 on POST /user/login with [Client IP]",
-        "pattern": r"\[.*\] - 500 500 - POST https 2fa\.biker633\.ddnss\.de \"/user/login\" \[Client (\d{1,3}(?:\.\d{1,3}){3})\]",
+        "pattern": r"\[.*\] - 500 500 - POST https?\s+\S+\s+\"/user/login\"\s+\[Client (\d{1,3}(?:\.\d{1,3}){3})\]",
         "flags": "IGNORECASE",
         "enabled": True,
     },
