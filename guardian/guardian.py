@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.27.2"
+VERSION = "1.27.3"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -210,8 +210,15 @@ DEFAULT_RULE_DEFS = [
     },
     {
         "id": "npm_proxy",
-        "description": "Nginx Proxy Manager: custom log with [Client IP] and 4xx/5xx on login path",
-        "pattern": r"(?:4[0-9]{2}|5[0-9]{2}).*?\"(?:[^\"]*(?:/login|/signin|/sign_in|/auth|/user/login|/admin|/identity/connect/token|/api/v\d+/auth)[^\"]*)\"\s+\[Client\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]",
+        "description": "NPM: 4xx/5xx on auth path with [Client IP]",
+        "pattern": r"- (?:4[0-9]{2}|5[0-9]{2}) \d+ - (?:POST|GET|PUT) https? \S+ \"[^\"]*(?:/login|/signin|/sign_in|/auth|/user/login|/admin|/identity/connect/token|/api/v\d+/auth|/doku\.php)[^\"]*\" \[Client (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "npm_nextcloud_fail",
+        "description": "NPM: Nextcloud failed login — GET /index.php/login?direct=1&user= → 200",
+        "pattern": r"- 200 200 - GET https? \S+ \"/index\.php/login\?(?:direct=1&)?user=[^\"]+\" \[Client (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]",
         "flags": "IGNORECASE",
         "enabled": True,
     },
