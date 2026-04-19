@@ -1463,10 +1463,13 @@ function closeEvidence() { document.getElementById('evidenceModal').style.displa
 
 // ---- Rules ----
 let _editingRuleId = null;
+let _rulesCache = {};
 
 async function loadRules() {
   try {
     const rules = await api('GET', 'api/rules');
+    _rulesCache = {};
+    rules.forEach(r => { _rulesCache[r.id] = r; });
     const tb = document.getElementById('rulesTable');
     if (!rules.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="6">No rules loaded</td></tr>'; return; }
     tb.innerHTML = rules.map(r => `<tr>
@@ -1481,12 +1484,24 @@ async function loadRules() {
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;font-family:monospace;color:var(--text-muted)" title="${esc(r.pattern)}">${esc(r.pattern)}</td>
       <td style="font-size:11px">${esc(r.flags || '–')}</td>
       <td style="display:flex;gap:4px;flex-wrap:wrap">
-        <button class="btn btn-ghost btn-sm" onclick="showRuleEditor(${JSON.stringify(r).replace(/"/g,'&quot;')})">Edit</button>
-        <button class="btn btn-ghost btn-sm" onclick="copyRule(${JSON.stringify(r).replace(/"/g,'&quot;')})">Copy</button>
+        <button class="btn btn-ghost btn-sm" onclick="showRuleEditorById('${esc(r.id)}')">Edit</button>
+        <button class="btn btn-ghost btn-sm" onclick="copyRuleById('${esc(r.id)}')">Copy</button>
         <button class="btn btn-danger btn-sm" onclick="deleteRule('${esc(r.id)}')">Delete</button>
       </td>
     </tr>`).join('');
   } catch (e) { toast('Error: ' + e.message, 'err'); }
+}
+
+function showRuleEditorById(id) {
+  const rule = _rulesCache[id];
+  if (!rule) { toast('Rule not found: ' + id, 'err'); return; }
+  showRuleEditor(rule);
+}
+
+function copyRuleById(id) {
+  const rule = _rulesCache[id];
+  if (!rule) { toast('Rule not found: ' + id, 'err'); return; }
+  copyRule(rule);
 }
 
 async function toggleRule(id, enabled) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.27.1 – 2026-04-19
+
+### Fixed
+- **Log Discovery**: `discover_interval_minutes` Default von 15 auf 1 Minute gesenkt — neue Tages-Log-Dateien (z.B. DokuWiki `2026-04-19.log`) werden jetzt automatisch innerhalb 1 Minute erkannt
+- **DokuWiki Regel**: `dokuwiki_auth` Pattern erkennt jetzt auch `[AUTHFAIL] user="..." ip="X.X.X.X"` Format und extrahiert die IP korrekt
+- **Rule Editor Bug**: Edit-Button übergab Rule-Data per inline JSON im HTML — Regex-Backslashes beschädigten das JSON und zeigten beim zweiten Edit die falsche Regel. Fix: Rules werden per ID aus einem Cache geladen
+
 ## 1.27.0 – 2026-04-19
 
 ### Added

@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.27.0"
+VERSION = "1.27.1"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -175,8 +175,8 @@ DEFAULT_RULE_DEFS = [
     },
     {
         "id": "dokuwiki_auth",
-        "description": "DokuWiki auth.log: LOGIN FAILURE or auth_failure",
-        "pattern": r"(?:LOGIN FAILURE|auth.?fail|authentication fail).*?(?:\[|from\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "description": "DokuWiki auth.log: LOGIN FAILURE / auth_failure / [AUTHFAIL] ip=\"X.X.X.X\"",
+        "pattern": r"(?:LOGIN FAILURE|auth.?fail|authentication fail|\[AUTHFAIL\]).*?(?:ip=\"|from\s+|\[)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
         "flags": "IGNORECASE",
         "enabled": True,
     },
@@ -628,7 +628,7 @@ class Config:
         self.scan_interval_seconds: int = 1
         self.addon_poll_interval: int = 15
         self.log_interval_minutes: int = 5
-        self.discover_interval_minutes: int = 15
+        self.discover_interval_minutes: int = 1
         self.log_file: str = LOG_FILE_DEFAULT
         self._load()
 
@@ -644,7 +644,7 @@ class Config:
             self.scan_interval_seconds = max(1, int(d.get("scan_interval_seconds", 1)))
             self.addon_poll_interval = max(5, int(d.get("addon_poll_interval", 15)))
             self.log_interval_minutes = max(1, int(d.get("log_interval_minutes", 5)))
-            self.discover_interval_minutes = max(1, int(d.get("discover_interval_minutes", 15)))
+            self.discover_interval_minutes = max(1, int(d.get("discover_interval_minutes", 1)))
             self.log_file = d.get("log_file", LOG_FILE_DEFAULT)
 
             # Seed state from options.json if state has empty whitelist
