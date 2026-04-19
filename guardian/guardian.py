@@ -195,6 +195,13 @@ DEFAULT_RULE_DEFS = [
         "enabled": True,
     },
     {
+        "id": "photoprism_login",
+        "description": "Photoprism NPM proxy (inkl. HA-Ingress-Pfad): 401 auf POST /api/v1/session",
+        "pattern": r"\[.*\] - 401 401 - POST https?\s+\S+\s+\"[^\"]+/api/v1/session\"\s+\[Client (\d{1,3}(?:\.\d{1,3}){3})\]",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
         "id": "ha_core_invalid_auth",
         "description": "HA Core: Login attempt or invalid authentication from IP",
         "pattern": r"(?:Login attempt|invalid authentication).*?\((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)",
