@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.27.0 – 2026-04-19
+
+### Added
+- **10 neue Erkennungsregeln** inspiriert von CrowdSec Hub Scenarios:
+  - `ssh_invalid_user` – SSH Invalid user (crowdsecurity/ssh-bf)
+  - `ssh_preauth` – SSH Connection closed/disconnected during [preauth]
+  - `ssh_pam_auth_fail` – SSH PAM authentication failure mit rhost=
+  - `wordpress_bf` – WordPress wp-login.php Brute Force, HTTP 200 (crowdsecurity/http-bf-wordpress_bf)
+  - `wp_xmlrpc` – WordPress xmlrpc.php Brute Force (crowdsecurity/http-wordpress-xmlrpc)
+  - `http_scan_404` – HTTP Scanner / Probing via 404s (crowdsecurity/http-probing, standardmäßig deaktiviert)
+  - `roundcube_bf` – Roundcube Webmail Failed Login
+  - `gitea_forgejo_bf` – Gitea/Forgejo Failed Login
+  - `proxmox_bf` – Proxmox VE Authentication Failure
+  - `ftp_fail` – FTP Login Failure
+  - `imap_dovecot_bf` – Dovecot IMAP failed login mit rip= (crowdsecurity/dovecot-bf)
+  - `apache_auth_fail` – Apache authentication failure (crowdsecurity/apache2-bf)
+
 ## 1.26.0 – 2026-04-10
 
 ### Added

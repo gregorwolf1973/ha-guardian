@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.26.0"
+VERSION = "1.27.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -111,6 +111,27 @@ DEFAULT_RULE_DEFS = [
         "enabled": True,
     },
     {
+        "id": "ssh_invalid_user",
+        "description": "SSH: Invalid user attempts (crowdsecurity/ssh-bf)",
+        "pattern": r"[Ii]nvalid user\s+\S+\s+from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "ssh_preauth",
+        "description": "SSH: Connection closed/disconnected during preauth (scanning bots)",
+        "pattern": r"(?:Disconnected from|Connection closed by)(?: (?:authenticating|invalid) user \S+)?\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\[preauth\]",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "ssh_pam_auth_fail",
+        "description": "SSH: PAM authentication failure with rhost= IP",
+        "pattern": r"pam_\w+\(sshd:auth\): authentication failure;.*rhost=(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "",
+        "enabled": True,
+    },
+    {
         "id": "nextcloud",
         "description": "Nextcloud JSON log: Login failed or Bruteforce with remoteAddr",
         "pattern": r"\"remoteAddr\"\s*:\s*\"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\".*\"message\"\s*:\s*\"(?:Login failed|Bruteforce)",
@@ -184,6 +205,69 @@ DEFAULT_RULE_DEFS = [
         "id": "npm_proxy",
         "description": "Nginx Proxy Manager: custom log with [Client IP] and 4xx/5xx on login path",
         "pattern": r"(?:4[0-9]{2}|5[0-9]{2}).*?\"(?:[^\"]*(?:/login|/signin|/sign_in|/auth|/user/login|/admin|/identity/connect/token|/api/v\d+/auth)[^\"]*)\"\s+\[Client\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "wordpress_bf",
+        "description": "WordPress: brute force on wp-login.php returning 200 (crowdsecurity/http-bf-wordpress_bf)",
+        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"POST\s+/wp-login\.php\s+HTTP/\S+\"\s+200\s",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "wp_xmlrpc",
+        "description": "WordPress: xmlrpc.php brute force (crowdsecurity/http-wordpress-xmlrpc)",
+        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"POST\s+/xmlrpc\.php\s+HTTP/\S+\"\s+(?:200|403)\s",
+        "flags": "",
+        "enabled": True,
+    },
+    {
+        "id": "http_scan_404",
+        "description": "HTTP scanner: rapid 404s on non-static paths (crowdsecurity/http-probing)",
+        "pattern": r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*\"(?:GET|POST|HEAD)\s+\S+\s+HTTP/\S+\"\s+404\s",
+        "flags": "",
+        "enabled": False,
+    },
+    {
+        "id": "roundcube_bf",
+        "description": "Roundcube webmail: failed login attempt",
+        "pattern": r"(?:IMAP Error|Login failed|Failed login).*?from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?(?:roundcube.*login failed|Failed login.*roundcube)",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "gitea_forgejo_bf",
+        "description": "Gitea/Forgejo: failed login attempts",
+        "pattern": r"(?:Failed login|Invalid credentials|Login failed).*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?(?:Failed login|Invalid credentials)",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "proxmox_bf",
+        "description": "Proxmox VE: authentication failure",
+        "pattern": r"authentication failure.*?(?:rhost=|from )(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|pvedaemon\[.*?\].*?authentication failure",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "ftp_fail",
+        "description": "FTP: failed login / authentication failure",
+        "pattern": r"(?:FAIL LOGIN|Login failed|530 Login|530 Authentication failed|530 Password|User .* failed to login).*?(?:\[|from\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "imap_dovecot_bf",
+        "description": "Dovecot IMAP: failed login with rip= (crowdsecurity/dovecot-bf)",
+        "pattern": r"dovecot.*?(?:auth failed|Aborted login|no auth attempts).*?rip=(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+        "flags": "IGNORECASE",
+        "enabled": True,
+    },
+    {
+        "id": "apache_auth_fail",
+        "description": "Apache: user authentication failure (crowdsecurity/apache2-bf)",
+        "pattern": r"(?:user \S+: authentication failure for|user \S+ not found).*?(?:\[client\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
         "flags": "IGNORECASE",
         "enabled": True,
     },
