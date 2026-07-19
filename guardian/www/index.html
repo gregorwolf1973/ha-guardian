@@ -62,6 +62,11 @@
     }
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .tab-badge {
+      display: inline-block; margin-left: 6px; min-width: 16px; padding: 0 5px;
+      font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+      border-radius: 8px; background: var(--danger); color: #fff;
+    }
 
     .tab-pane { display: none; padding: 20px; }
     .tab-pane.active { display: block; }
@@ -170,6 +175,9 @@
     .form-row label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
     .form-row input { width: 100%; }
     .hint { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+    details.field-group summary::-webkit-details-marker { display: none; }
+    details.field-group .details-caret { transition: transform .15s; display: inline-block; }
+    details.field-group[open] .details-caret { transform: rotate(90deg); }
     .save-row { margin-top: 16px; }
 
     #toast {
@@ -220,7 +228,7 @@
   <div class="header-left">
     <span class="header-icon">🛡️</span>
     <h1>HA Guardian</h1>
-    <span class="version-badge" id="ver">v1.5.0</span>
+    <span class="version-badge" id="ver">…</span>
   </div>
   <div>
     <span class="status-dot" id="statusDot"></span>
@@ -254,7 +262,7 @@
 <div class="tabs" id="tabBar">
   <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
   <button class="tab-btn" data-tab="bans">Blocked IPs</button>
-  <button class="tab-btn" data-tab="sources">Addons</button>
+  <button class="tab-btn" data-tab="sources">Addons<span id="sourcesTabBadge" class="tab-badge" style="display:none"></span></button>
   <button class="tab-btn" data-tab="whitelist">Whitelist</button>
   <button class="tab-btn" data-tab="settings">Settings</button>
   <button class="tab-btn" data-tab="rules">Rules</button>
@@ -262,6 +270,14 @@
 
 <!-- DASHBOARD -->
 <div id="tab-dashboard" class="tab-pane active">
+  <div id="setupBanner" class="system-banner" style="display:none">
+    <div class="banner-icon" id="setupBannerIcon">💡</div>
+    <div class="banner-text">
+      <h3 id="setupBannerTitle"></h3>
+      <p id="setupBannerDesc"></p>
+    </div>
+    <button id="setupBannerBtn" class="btn btn-primary btn-sm" style="display:none"></button>
+  </div>
   <div class="section-header">
     <h2>Recent Login Failures</h2>
   </div>
@@ -434,29 +450,34 @@
           <div class="hint">Time window for the alerts summary.</div>
         </div>
       </div>
-      <div class="field-group">
-        <h3>Scanning</h3>
-        <div class="form-row">
-          <label>File scan interval (seconds)</label>
-          <input id="cfgScanInterval" type="number" min="1" max="60">
-          <div class="hint">How often log files are checked for new entries.</div>
+      <details class="field-group" style="grid-column: 1 / -1">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;list-style:none;display:flex;align-items:center;gap:8px">
+          <span class="details-caret">▸</span> Advanced — Scanning intervals
+          <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:11px">(defaults are fine for most setups)</span>
+        </summary>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px">
+          <div class="form-row">
+            <label>File scan interval (seconds)</label>
+            <input id="cfgScanInterval" type="number" min="1" max="60">
+            <div class="hint">How often log files are checked for new entries.</div>
+          </div>
+          <div class="form-row">
+            <label>Addon poll interval (seconds)</label>
+            <input id="cfgAddonPoll" type="number" min="5" max="300">
+            <div class="hint">How often addon Docker logs are polled.</div>
+          </div>
+          <div class="form-row">
+            <label>Log discovery interval (minutes)</label>
+            <input id="cfgDiscoverInterval" type="number" min="1" max="1440">
+            <div class="hint">How often Guardian searches for new log files and addon sources.</div>
+          </div>
+          <div class="form-row">
+            <label>Status log interval (minutes)</label>
+            <input id="cfgLogInterval" type="number" min="1" max="60">
+            <div class="hint">How often a status summary is written to the Guardian log.</div>
+          </div>
         </div>
-        <div class="form-row">
-          <label>Addon poll interval (seconds)</label>
-          <input id="cfgAddonPoll" type="number" min="5" max="300">
-          <div class="hint">How often addon Docker logs are polled.</div>
-        </div>
-        <div class="form-row">
-          <label>Log discovery interval (minutes)</label>
-          <input id="cfgDiscoverInterval" type="number" min="1" max="1440">
-          <div class="hint">How often Guardian searches for new log files and addon sources.</div>
-        </div>
-        <div class="form-row">
-          <label>Status log interval (minutes)</label>
-          <input id="cfgLogInterval" type="number" min="1" max="60">
-          <div class="hint">How often a status summary is written to the Guardian log.</div>
-        </div>
-      </div>
+      </details>
       <div class="field-group" style="grid-column: 1 / -1">
         <h3>Trusted Domains</h3>
         <div class="form-row">
@@ -481,8 +502,12 @@
             <input type="checkbox" id="cfgBanCrowdsec" style="width:16px;height:16px">
             Send ban to <strong>CrowdSec</strong>
           </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="cfgNotifyOnBan" style="width:16px;height:16px">
+            Home Assistant <strong>notification</strong> on each ban
+          </label>
         </div>
-        <div class="hint" style="margin-top:6px">ip_bans.yaml = HA application-level blocking · CrowdSec = network-level blocking via firewall bouncer</div>
+        <div class="hint" style="margin-top:6px">ip_bans.yaml = HA application-level blocking · CrowdSec = network-level blocking via firewall bouncer · notification = HA persistent notification per ban</div>
       </div>
 
       <div class="field-group" style="grid-column: 1 / -1">
@@ -494,8 +519,11 @@
         </div>
         <div class="form-row">
           <label>LAPI URL</label>
-          <input id="cfgCsUrl" type="text" placeholder="http://172.30.33.4:8080">
-          <div class="hint">CrowdSec Local API URL. Find the IP in the CrowdSec addon logs.</div>
+          <div style="display:flex;gap:8px">
+            <input id="cfgCsUrl" type="text" placeholder="http://172.30.33.4:8080" style="flex:1">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="discoverCrowdSec()">Auto-discover</button>
+          </div>
+          <div class="hint" id="csDiscoverHint">CrowdSec Local API URL. Click Auto-discover to detect it from the CrowdSec addon.</div>
         </div>
         <div class="form-row">
           <label>Machine ID</label>
@@ -543,8 +571,8 @@
     <h2>Unmatched Auth Lines</h2>
   </div>
   <p style="font-size:12px;color:var(--text-muted);margin-bottom:14px">
-    Zeilen aus aktiven Log-Quellen mit auth-Schlüsselwörtern, die keinem Erkennungsmuster entsprechen.
-    Hilfreich um neue Log-Formate zu identifizieren.
+    Lines from active log sources containing auth keywords that match no detection pattern.
+    Useful for identifying new log formats that may need a custom rule.
   </p>
   <div class="table-wrap">
     <table>
@@ -667,6 +695,23 @@
 
 <div id="toast"></div>
 
+<!-- CONFIRM DIALOG -->
+<div id="confirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;padding:30px;overflow:auto">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);max-width:440px;margin:15vh auto 0">
+    <div style="padding:16px 18px;display:flex;align-items:flex-start;gap:12px">
+      <span id="confirmIcon" style="font-size:24px;line-height:1">⚠️</span>
+      <div style="flex:1">
+        <h3 id="confirmTitle" style="font-size:15px;font-weight:600;margin-bottom:6px">Confirm</h3>
+        <p id="confirmMsg" style="font-size:13px;color:var(--text-muted);white-space:pre-line;margin:0"></p>
+      </div>
+    </div>
+    <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="confirmCancel">Cancel</button>
+      <button class="btn btn-danger btn-sm" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const TABS = ['dashboard','bans','sources','whitelist','settings','rules'];
 let activeTab = 'dashboard';
@@ -708,7 +753,7 @@ function refreshTab(tab, showSpinner = false) {
   else if (tab === 'sources') loadSources(showSpinner);
   else if (tab === 'whitelist') loadWhitelist();
   else if (tab === 'settings') loadSettings();
-  else if (tab === 'rules') loadRules();
+  else if (tab === 'rules') { loadRules(); loadUnmatched(); }
 }
 
 // ---- API ----
@@ -727,6 +772,33 @@ function toast(msg, type = 'ok') {
   const el = document.getElementById('toast');
   el.textContent = msg; el.className = 'show ' + type;
   clearTimeout(_tt); _tt = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ---- Confirm Dialog (styled, promise-based) ----
+function confirmDialog({ title = 'Confirm', message = '', okText = 'Confirm', danger = true, icon = '⚠️' } = {}) {
+  return new Promise(resolve => {
+    const modal = document.getElementById('confirmModal');
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMsg').textContent = message;
+    document.getElementById('confirmIcon').textContent = icon;
+    const okBtn = document.getElementById('confirmOk');
+    const cancelBtn = document.getElementById('confirmCancel');
+    okBtn.textContent = okText;
+    okBtn.className = 'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-primary');
+    modal.style.display = 'block';
+    const cleanup = result => {
+      modal.style.display = 'none';
+      okBtn.onclick = cancelBtn.onclick = modal.onclick = null;
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    };
+    const onKey = e => { if (e.key === 'Escape') cleanup(false); if (e.key === 'Enter') cleanup(true); };
+    okBtn.onclick = () => cleanup(true);
+    cancelBtn.onclick = () => cleanup(false);
+    modal.onclick = e => { if (e.target === modal) cleanup(false); };
+    document.addEventListener('keydown', onKey);
+    okBtn.focus();
+  });
 }
 
 // ---- Helpers ----
@@ -782,14 +854,53 @@ async function loadStats() {
   }
 }
 
+// ---- Setup / Onboarding Banner ----
+async function loadSetupBanner() {
+  const banner = document.getElementById('setupBanner');
+  if (!banner) return;
+  try {
+    const addons = await api('GET', 'api/addons');
+    const real = addons.filter(a => a.id !== '__unused__');
+    const enabled = real.filter(a => a.enabled);
+    const npm = real.find(a =>
+      /nginx.?proxy.?manager|nginxproxymanager/i.test((a.name || '') + ' ' + (a.id || '')));
+    const title = document.getElementById('setupBannerTitle');
+    const desc = document.getElementById('setupBannerDesc');
+    const icon = document.getElementById('setupBannerIcon');
+    const btn = document.getElementById('setupBannerBtn');
+    const show = (cls, ic, t, d, btnText, btnAction) => {
+      banner.style.display = 'flex';
+      banner.className = 'system-banner ' + cls;
+      icon.textContent = ic; title.textContent = t; desc.textContent = d;
+      if (btnText) { btn.style.display = ''; btn.textContent = btnText; btn.onclick = btnAction; }
+      else btn.style.display = 'none';
+    };
+    if (!enabled.length) {
+      show('warn', '⚠️', 'No log sources enabled yet',
+        'Guardian is not monitoring anything. Enable at least one source to start protection.',
+        'Open Addons →', () => document.querySelector('.tab-btn[data-tab="sources"]').click());
+    } else if (npm && !npm.enabled) {
+      show('warn', '⚡', 'Nginx Proxy Manager detected but not monitored',
+        'NPM is usually the only source that logs the real attacker IP. Enable it for effective protection.',
+        'Enable NPM monitoring', async () => {
+          await toggleAddon(npm.id, true);
+          loadSetupBanner();
+        });
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (_) { banner.style.display = 'none'; }
+}
+
 // ---- Dashboard ----
 async function loadDashboard(showSpinner = false) {
   if (showSpinner) showLoading('dashboard', 'Checking log files…');
+  loadSetupBanner();
   try {
     await loadStats();
     const rawEvents = await api('GET', 'api/events');
     const tb = document.getElementById('eventsTable');
-    if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No events yet</td></tr>'; return; }
+    if (!rawEvents.length) { tb.innerHTML = '<tr class="empty-row"><td colspan="7">No login failures detected — you\'re protected. If you expected activity, check that your sources are enabled in the Addons tab.</td></tr>'; return; }
     const byIp = {};
     const skipped = [];
     rawEvents.forEach(e => {
@@ -985,6 +1096,7 @@ async function loadSources(showSpinner = false) {
       }
     });
     tb.innerHTML = rows.join('');
+    runHealthCheck({ silent: true });
   } catch (e) { toast('Error loading addons: ' + e.message, 'err'); }
   finally { hideLoading('sources'); }
 }
@@ -996,9 +1108,9 @@ async function deleteSource(btn) {
   const id = btn.dataset.sid;
   const name = btn.dataset.name;
   const hasFile = btn.dataset.delfile === 'true';
-  const fileMsg = hasFile ? '\n\n⚠️ WARNING: The log file on disk will also be permanently deleted!' : '';
+  const fileMsg = hasFile ? '\n\nWARNING: The log file on disk will also be permanently deleted!' : '';
   const msg = 'Remove source "' + name + '" from Guardian?' + fileMsg + '\n\nThis cannot be undone.';
-  if (!confirm(msg)) return;
+  if (!await confirmDialog({ title: hasFile ? 'Delete source & file' : 'Remove source', message: msg, okText: hasFile ? 'Delete' : 'Remove' })) return;
   try {
     await api('POST', 'api/sources/delete', { id, delete_file: hasFile });
     toast('Source removed: ' + name, 'ok');
@@ -1021,8 +1133,19 @@ async function discoverSources() {
   catch (e) { toast(e.message, 'err'); }
   finally { hideLoading('sources'); }
 }
-async function healthCheck() {
-  showLoading('sources', 'Running health check…');
+function _updateSourcesTabBadge(staleCount) {
+  const badge = document.getElementById('sourcesTabBadge');
+  if (!badge) return;
+  if (staleCount > 0) {
+    badge.textContent = staleCount;
+    badge.title = staleCount + ' stale source(s) — no recent entries';
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+async function runHealthCheck({ silent = false } = {}) {
+  if (!silent) showLoading('sources', 'Running health check…');
   try {
     const result = await api('POST', 'api/addons/health');
     let okCount = 0, staleCount = 0, emptyCount = 0;
@@ -1045,31 +1168,12 @@ async function healthCheck() {
         emptyCount++;
       }
     }
-    toast(`Health: ${okCount} OK, ${staleCount} stale, ${emptyCount} empty`, okCount > 0 && staleCount === 0 ? 'ok' : 'warn');
-  } catch (e) { toast('Health check error: ' + e.message, 'err'); }
-  hideLoading('sources');
+    _updateSourcesTabBadge(staleCount);
+    if (!silent) toast(`Health: ${okCount} OK, ${staleCount} stale, ${emptyCount} empty`, okCount > 0 && staleCount === 0 ? 'ok' : 'warn');
+  } catch (e) { if (!silent) toast('Health check error: ' + e.message, 'err'); }
+  if (!silent) hideLoading('sources');
 }
-async function previewAddon(id, name) {
-  document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
-  document.getElementById('previewContent').textContent = 'Loading…';
-  document.getElementById('previewModal').style.display = 'block';
-  try {
-    const data = await api('POST', 'api/addons/preview', { id, lines: 100 });
-    const lines = data.lines || [];
-    if (!lines.length) {
-      document.getElementById('previewContent').textContent = '(empty or not accessible)';
-      return;
-    }
-    document.getElementById('previewContent').innerHTML = lines.map(l => {
-      const el = esc(l);
-      return el.replace(/(login|auth|password|fail|denied|invalid|wrong|401|403|blocked|reject|credential|attempt|brute)/gi,
-        '<span style="color:var(--warn);font-weight:600">$1</span>');
-    }).join('\n');
-  } catch (e) {
-    document.getElementById('previewContent').textContent = 'Error: ' + e.message;
-  }
-}
-
+function healthCheck() { return runHealthCheck({ silent: false }); }
 async function previewSource(sourceId) {
   const name = sourceId.replace(/^(file:|addon:)/, '').split('/').pop();
   document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
@@ -1149,14 +1253,9 @@ async function removeWhitelistSafe(entry) {
     let myIp = null;
     try { myIp = (await fetch('https://ipinfo.io/json').then(r => r.json())).ip; } catch (_) {}
     if (myIp && entry === myIp) {
-      if (!confirm('⚠️ Warning: ' + entry + ' appears to be your current public IP.\n\nRemoving it from the whitelist means you could be banned if you make too many failed login attempts.\n\nContinue?')) return;
+      if (!await confirmDialog({ title: 'Remove your own IP?', message: entry + ' appears to be your current public IP.\n\nRemoving it from the whitelist means you could be banned if you make too many failed login attempts.', okText: 'Remove anyway' })) return;
     }
   }
-  try { await api('POST', 'api/whitelist/delete', { entry }); toast(entry + ' removed', 'ok'); loadWhitelist(); }
-  catch (e) { toast(e.message, 'err'); }
-}
-
-async function removeWhitelist(entry) {
   try { await api('POST', 'api/whitelist/delete', { entry }); toast(entry + ' removed', 'ok'); loadWhitelist(); }
   catch (e) { toast(e.message, 'err'); }
 }
@@ -1177,6 +1276,7 @@ async function loadSettings() {
     // Ban targets
     document.getElementById('cfgBanIpbans').checked = c.ban_to_ipbans !== false;  // default true
     document.getElementById('cfgBanCrowdsec').checked = !!c.ban_to_crowdsec;
+    document.getElementById('cfgNotifyOnBan').checked = c.notify_on_ban !== false;  // default true
     // CrowdSec
     document.getElementById('cfgCsUrl').value = c.crowdsec_lapi_url || '';
     document.getElementById('cfgCsMachineId').value = c.crowdsec_machine_id || '';
@@ -1287,6 +1387,7 @@ async function saveSettings(ev) {
       trusted_domains: _getCurrentDomains(),
       ban_to_ipbans: document.getElementById('cfgBanIpbans').checked,
       ban_to_crowdsec: document.getElementById('cfgBanCrowdsec').checked,
+      notify_on_ban: document.getElementById('cfgNotifyOnBan').checked,
       crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
       crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
     };
@@ -1325,6 +1426,29 @@ async function testCrowdSec() {
   btn.disabled = false;
 }
 
+async function discoverCrowdSec() {
+  const hint = document.getElementById('csDiscoverHint');
+  const btn = event.target;
+  btn.disabled = true;
+  hint.textContent = 'Searching for the CrowdSec addon…';
+  hint.style.color = 'var(--text-muted)';
+  try {
+    const r = await api('POST', 'api/crowdsec/discover');
+    if (r.ok && r.url) {
+      document.getElementById('cfgCsUrl').value = r.url;
+      hint.textContent = '✓ Found "' + (r.addon || r.slug) + '" → ' + r.url + '. ' + (r.note || '') + ' Now click Test Connection.';
+      hint.style.color = 'var(--success)';
+    } else {
+      hint.textContent = '✗ ' + (r.error || 'Not found') + ' — enter the LAPI URL manually.';
+      hint.style.color = 'var(--danger)';
+    }
+  } catch (e) {
+    hint.textContent = '✗ ' + e.message;
+    hint.style.color = 'var(--danger)';
+  }
+  btn.disabled = false;
+}
+
 // ---- Trusted Domains ----
 function _getCurrentDomains() {
   return [...document.getElementById('domainsChips').querySelectorAll('[data-domain]')]
@@ -1359,27 +1483,6 @@ async function removeTrustedDomain(domain) {
 
 
 // ---- Log Preview ----
-async function previewSource(id, name) {
-  document.getElementById('previewTitle').textContent = 'Log Preview: ' + name;
-  document.getElementById('previewContent').textContent = 'Loading…';
-  document.getElementById('previewModal').style.display = 'block';
-  try {
-    const data = await api('POST', 'api/sources/preview', { id, lines: 100 });
-    const lines = data.lines || [];
-    if (!lines.length) {
-      document.getElementById('previewContent').textContent = '(empty or not accessible)';
-      return;
-    }
-    // Highlight auth-related keywords
-    document.getElementById('previewContent').innerHTML = lines.map(l => {
-      const el = esc(l);
-      return el.replace(/(login|auth|password|fail|denied|invalid|wrong|401|403|blocked|reject|credential|attempt|brute)/gi,
-        '<span style="color:var(--warn);font-weight:600">$1</span>');
-    }).join('\n');
-  } catch (e) {
-    document.getElementById('previewContent').textContent = 'Error: ' + e.message;
-  }
-}
 function closePreview() {
   document.getElementById('previewModal').style.display = 'none';
 }
@@ -1563,13 +1666,13 @@ async function saveRule() {
 }
 
 async function deleteRule(id) {
-  if (!confirm('Delete rule "' + id + '"?')) return;
+  if (!await confirmDialog({ title: 'Delete rule', message: 'Delete rule "' + id + '"?', okText: 'Delete' })) return;
   try { await api('DELETE', 'api/rules/' + encodeURIComponent(id)); toast('Deleted: ' + id, 'ok'); loadRules(); }
   catch (e) { toast(e.message, 'err'); }
 }
 
 async function resetRules() {
-  if (!confirm('Reset all rules to factory defaults? Custom rules will be lost.')) return;
+  if (!await confirmDialog({ title: 'Factory reset rules', message: 'Reset all rules to factory defaults? Custom rules will be lost.', okText: 'Reset' })) return;
   try { await api('POST', 'api/rules/reset'); toast('Rules reset to defaults', 'ok'); loadRules(); }
   catch (e) { toast(e.message, 'err'); }
 }
@@ -1637,7 +1740,7 @@ async function autoUpdateMyIp() {
 }
 
 async function disableMyIp() {
-  if (!confirm('Disable My IP protection?\n\nYou could be banned if you make too many failed login attempts.\n\nContinue?')) return;
+  if (!await confirmDialog({ title: 'Disable My IP protection?', message: 'You could be banned if you make too many failed login attempts.', okText: 'Disable' })) return;
   try { await api('DELETE', 'api/my-ip'); } catch (_) {}
   _renderMyIpStatus();
 }
@@ -1678,6 +1781,7 @@ async function generateRegex() {
 // ---- Init & Auto-Refresh ----
 loadDashboard(true);  // show spinner on first load
 autoUpdateMyIp();
+runHealthCheck({ silent: true });  // populate stale badge without opening Addons tab
 // Auto-refresh silently (no spinner) in background
 let _lastRefresh = 0;
 setInterval(() => {

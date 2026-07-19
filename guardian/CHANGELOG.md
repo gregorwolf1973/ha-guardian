@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.28.0 – 2026-07-19
+
+### Added
+- **Home Assistant notification on each ban**: Guardian now creates a persistent notification in HA whenever it bans an IP (toggle under Settings → Ban Targets, on by default). Requires the new `homeassistant_api` permission
+- **CrowdSec LAPI auto-discovery**: an "Auto-discover" button next to the LAPI URL field detects the CrowdSec addon via the Supervisor API and fills in the URL — no more looking up the container IP in the logs
+- **Setup banner on Dashboard**: guides first-time users — warns if no log sources are enabled, and offers a one-click "Enable NPM monitoring" button when Nginx Proxy Manager is detected but not monitored
+- **Stale-source badge** on the Addons tab: a health check now runs automatically (silently) and shows a red counter on the tab when a source has no recent entries — no need to click "Health Check" manually
+- **Styled confirmation dialogs**: destructive actions (unban, delete source/rule, factory reset, disable My-IP protection) now use an in-app modal instead of the browser's native `confirm()`
+
+### Changed
+- **Settings simplified**: the four scanning-interval fields are collapsed into an "Advanced" section — defaults are fine for most setups
+- **Actionable empty states** and English wording consistency across the UI
+
+### Fixed
+- **Log preview title showed "undefined"**: `previewSource` was defined twice; the shadowing definition broke the modal title
+- **"Unmatched Auth Lines" never loaded**: the table on the Rules tab stayed empty because `loadUnmatched()` was never called on tab switch
+- **Version display**: hardcoded `v1.5.0` badge removed; `VERSION` in `guardian.py` synced (was 1.27.3, out of step with config.yaml)
+- Removed dead code (`previewAddon`, unused `removeWhitelist`)
+
 ## 1.27.1 – 2026-04-19
 
 ### Fixed

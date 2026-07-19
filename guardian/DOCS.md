@@ -82,13 +82,19 @@ Both targets can be toggled independently.
 
 ---
 
+## Notifications
+
+Guardian creates a **Home Assistant persistent notification** every time it bans an IP (title, reason, duration and attempt count). Toggle it under **Settings → Ban Targets → "Home Assistant notification on each ban"** (on by default).
+
+---
+
 ## CrowdSec LAPI Integration
 
 Guardian can send bans directly to the CrowdSec Local API. Prerequisites:
 
 1. CrowdSec addon installed and running
 2. Create machine account: `cscli machines add ha-guardian --password <password>`
-3. In Guardian Settings: enter LAPI URL, Machine ID and password (plaintext)
+3. In Guardian Settings: click **Auto-discover** to fill in the LAPI URL automatically (or enter it manually), then enter Machine ID and password (plaintext)
 4. **Test Connection** → on success the integration is active
 
 On every ban/unban a decision is automatically created or removed in CrowdSec. Ban duration is passed 1:1 (0 = permanent → 10 years in CrowdSec).

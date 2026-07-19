@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.27.3"
+VERSION = "1.28.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -73,6 +73,42 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 log = logging.getLogger("guardian")
+
+
+# ---------------------------------------------------------------------------
+# Home Assistant notifications (via Supervisor → Core API proxy)
+# ---------------------------------------------------------------------------
+async def send_ha_notification(title: str, message: str, notification_id: str = None) -> bool:
+    """Create a Home Assistant persistent notification via the Supervisor Core
+    API proxy. Best-effort: logs and returns False on any failure, never raises.
+    """
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        log.debug("Notification skipped — no SUPERVISOR_TOKEN")
+        return False
+    payload = {"title": title, "message": message}
+    if notification_id:
+        payload["notification_id"] = notification_id
+    try:
+        async with aiohttp_client.ClientSession() as session:
+            async with session.post(
+                f"{SUPERVISOR_URL}/core/api/services/persistent_notification/create",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=aiohttp_client.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status in (200, 201):
+                    return True
+                body = await resp.text()
+                log.warning("HA notification failed (%d): %s", resp.status, body[:200])
+                return False
+    except Exception as e:
+        log.warning("HA notification error: %s", e)
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Detection patterns — each yields an IP via group(1) or group(2)
@@ -624,6 +660,17 @@ class PersistentState:
         self._data["ban_to_crowdsec"] = bool(value)
         self.save()
 
+    # -- Notifications --
+    @property
+    def notify_on_ban(self) -> bool:
+        """Create a Home Assistant persistent notification for each ban. Default True."""
+        return self._data.get("notify_on_ban", True)
+
+    @notify_on_ban.setter
+    def notify_on_ban(self, value: bool):
+        self._data["notify_on_ban"] = bool(value)
+        self.save()
+
     # -- Config overrides --
     @property
     def config_overrides(self) -> dict:
@@ -772,6 +819,8 @@ class Config:
             # Ban targets
             "ban_to_ipbans": self._state.ban_to_ipbans,
             "ban_to_crowdsec": self._state.ban_to_crowdsec,
+            # Notifications
+            "notify_on_ban": self._state.notify_on_ban,
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -2083,6 +2132,16 @@ class BanManager:
         log.info("Banned %s for %d min — %s", ip, dur, reason)
         if self._crowdsec and not skip_crowdsec and self.config._state.ban_to_crowdsec:
             asyncio.create_task(self._crowdsec.submit_ban(ip, dur, reason))
+        if self.config._state.notify_on_ban:
+            dur_str = f"{dur} min" if dur > 0 else "permanently"
+            kind = "Manual ban" if manual else "Auto-ban"
+            src = f" via {source}" if source else ""
+            asyncio.create_task(send_ha_notification(
+                title=f"HA Guardian: {ip} blocked",
+                message=(f"{kind}{src} — banned {dur_str}.\n"
+                         f"Reason: {reason}" + (f" ({attempts} attempts)" if attempts else "")),
+                notification_id=f"ha_guardian_ban_{ip.replace('.', '_').replace(':', '_')}",
+            ))
         return True
 
     def get_evidence(self, ip: str) -> list:
@@ -2770,6 +2829,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             config._state.ban_to_ipbans = bool(d["ban_to_ipbans"])
         if "ban_to_crowdsec" in d:
             config._state.ban_to_crowdsec = bool(d["ban_to_crowdsec"])
+        # Notifications
+        if "notify_on_ban" in d:
+            config._state.notify_on_ban = bool(d["notify_on_ban"])
         config.save()
         return web.json_response({"ok": True})
 
@@ -2789,6 +2851,60 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
             password=d.get("password") or None,
         )
         return web.json_response(result)
+
+    async def handle_crowdsec_discover(req):
+        """Auto-discover the CrowdSec addon's LAPI URL via the Supervisor API,
+        so the user doesn't have to look up the container IP manually."""
+        token = source_mgr.get_supervisor_token()
+        if not token:
+            return web.json_response({"ok": False, "error": "No Supervisor token available"})
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            async with aiohttp_client.ClientSession() as session:
+                # 1) Find the CrowdSec addon among installed addons
+                async with session.get(
+                    f"{SUPERVISOR_URL}/addons", headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return web.json_response(
+                            {"ok": False, "error": f"Supervisor /addons returned {resp.status}: {body[:200]}"})
+                    data = await resp.json()
+                addons = data.get("data", {}).get("addons", [])
+                match = None
+                for a in addons:
+                    hay = (a.get("slug", "") + " " + a.get("name", "")).lower()
+                    if "crowdsec" in hay and "guardian" not in hay:
+                        match = a
+                        break
+                if not match:
+                    return web.json_response(
+                        {"ok": False, "error": "No CrowdSec addon found among installed addons"})
+                slug = match.get("slug", "")
+                # 2) Fetch its network info for a reachable hostname
+                hostname = None
+                async with session.get(
+                    f"{SUPERVISOR_URL}/addons/{slug}/info", headers=headers,
+                    timeout=aiohttp_client.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        info = (await resp.json()).get("data", {})
+                        hostname = info.get("hostname") or None
+                if not hostname:
+                    # Supervisor derives the DNS hostname from the slug (dots/underscores → dashes)
+                    hostname = slug.replace("_", "-").replace(".", "-")
+                url = f"http://{hostname}:8080"
+                return web.json_response({
+                    "ok": True,
+                    "url": url,
+                    "addon": match.get("name", slug),
+                    "slug": slug,
+                    "note": "Default LAPI port 8080 assumed. Adjust if your CrowdSec config differs, then Test Connection.",
+                })
+        except Exception as e:
+            log.warning("CrowdSec discover error: %s", e)
+            return web.json_response({"ok": False, "error": str(e)})
 
     # --- System status: protected mode + iptables ---
     async def handle_get_system(req):
@@ -3229,6 +3345,7 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
     app.router.add_post("/api/config", handle_post_config)
     app.router.add_get("/api/health", handle_health)
     app.router.add_post("/api/crowdsec/test", handle_crowdsec_test)
+    app.router.add_post("/api/crowdsec/discover", handle_crowdsec_discover)
     app.router.add_get("/api/system", handle_get_system)
     app.router.add_post("/api/system/protection", handle_set_protection)
     app.router.add_post("/api/system/restart", handle_restart_addon)
