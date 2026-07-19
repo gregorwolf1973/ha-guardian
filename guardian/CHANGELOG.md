@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.29.0 – 2026-07-19
+
+### Fixed – Detection rules audited & hardened
+- **SSH rules now detect IPv6** attackers (`ssh_fail`, `ssh_invalid_user`, `ssh_pam_auth_fail`) — previously only IPv4 was captured
+- **`ssh_preauth`**: also matches `Connection reset by … [preauth]` (common scanner signature)
+- **`dovecot_postfix`**: now catches Postfix `unknown[IP]: SASL … authentication failed` — the most common SASL brute-force line
+- **`dokuwiki_auth`**: matches tab-separated `LOGIN FAILURE\t<user>\t<ip>` in addition to `ip="…"` format
+- **`photoprism_login`**: matches `/api/v1/session` with or without an ingress path prefix
+- **`gitea_forgejo_bf`**: recognises `Failed authentication attempt …` wording
+- **`proxmox_bf`**: removed a dead pattern alternative that matched without capturing an IP (produced no ban)
+- **`ftp_fail`**: now covers vsftpd `Client "IP"`, proftpd `no such user found from IP`, and `authentication failed`
+- **`apache_auth_fail`**: real Apache error logs put `[client IP]` **before** the failure message — the rule now captures the IP in either position (a genuine miss before)
+- Added a regression test harness: all 30 rules verified against realistic sample lines with false-positive guards (benign 200/Accepted/successful-login lines must not match)
+
 ## 1.28.0 – 2026-07-19
 
 ### Added
