@@ -133,6 +133,21 @@ Regex pattern with capture group for the IP address:
 Login failed.*from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
 ```
 
+### Rule-Free NPM Detection (behavioural catch-all)
+
+Because **all** externally-reachable services sit behind Nginx Proxy Manager, NPM logs every request in the same format:
+
+```
+[time] - <status> <bytes> - <METHOD> <scheme> <host> "<path>" [Client <IP>]
+```
+
+Enable **Settings → Detection → "Rule-free Nginx Proxy Manager detection"** and Guardian will ban any IP that accumulates **401/403** responses across *any* proxied service — no per-app rule needed. This catches unknown or newly-added services automatically.
+
+- Uses the normal attempt threshold (`max_attempts` / `window_minutes`) and respects the whitelist.
+- Only `401`/`403` are counted (unambiguous "access denied"). `404` is excluded to avoid false positives from missing assets — scanner probing via 404 stays the opt-in `http_scan_404` rule.
+- Bans appear in the dashboard as `generic_npm_401` / `generic_npm_403`.
+- Explicit rules still run first and take precedence, so precise per-app detection is unaffected. Off by default.
+
 ---
 
 ## Whitelist Tab

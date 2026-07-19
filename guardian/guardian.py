@@ -27,7 +27,7 @@ BANS_FILE = "/config/ip_bans.yaml"
 SOURCES_FILE = "/data/guardian_sources.json"
 LOG_FILE_DEFAULT = "/config/home-assistant.log"
 SUPERVISOR_URL = "http://supervisor"
-VERSION = "1.29.0"
+VERSION = "1.30.0"
 RULES_FILE = "/data/guardian_rules.json"
 PORT = int(os.environ.get("GUARDIAN_PORT", 8098))
 
@@ -525,6 +525,39 @@ def _is_auth_related(line: str) -> bool:
     return bool(AUTH_KEYWORDS_RE.search(line))
 
 
+# Uniform Nginx-Proxy-Manager access-log format:
+#   [<time>] - <status> <bytes> - <METHOD> <scheme> <host> "<path>" [Client <ip>]
+# NPM sits in front of every proxied service and normalises everything to this
+# shape, so a single parser covers all of them — no per-app rule needed.
+GENERIC_NPM_RE = re.compile(
+    r'-\s+(\d{3})\s+\d+\s+-\s+'
+    r'(?:GET|POST|PUT|DELETE|HEAD|PATCH|OPTIONS)\s+https?\s+\S+\s+'
+    r'"[^"]*"\s+\[Client\s+(\d{1,3}(?:\.\d{1,3}){3})\]',
+    re.IGNORECASE,
+)
+# Statuses that unambiguously mean "access denied" — the safe, low-false-positive
+# core. 404 is deliberately excluded (noisy: favicons, missing assets); scanner
+# probing via 404 stays the opt-in `http_scan_404` rule.
+GENERIC_NPM_STATUSES = {"401", "403"}
+
+
+def _generic_npm_match(line: str):
+    """Rule-free NPM detection: return (ip, pattern_name) for a 401/403 response
+    in the NPM access-log format, or None. Used as a fallback when no explicit
+    rule matched the line."""
+    m = GENERIC_NPM_RE.search(line)
+    if not m:
+        return None
+    status, ip = m.group(1), m.group(2)
+    if status not in GENERIC_NPM_STATUSES:
+        return None
+    try:
+        ip_address(ip)
+        return ip, f"generic_npm_{status}"
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Persistent State — survives addon restarts
 # ---------------------------------------------------------------------------
@@ -669,6 +702,19 @@ class PersistentState:
     @notify_on_ban.setter
     def notify_on_ban(self, value: bool):
         self._data["notify_on_ban"] = bool(value)
+        self.save()
+
+    # -- Generic (rule-free) NPM detection --
+    @property
+    def generic_npm_enabled(self) -> bool:
+        """Behavioural catch-all: ban IPs that accumulate 401/403 responses in the
+        uniform Nginx-Proxy-Manager access-log format, without a service-specific
+        rule. Opt-in (default False) because it trades precision for coverage."""
+        return self._data.get("generic_npm_enabled", False)
+
+    @generic_npm_enabled.setter
+    def generic_npm_enabled(self, value: bool):
+        self._data["generic_npm_enabled"] = bool(value)
         self.save()
 
     # -- Config overrides --
@@ -821,6 +867,8 @@ class Config:
             "ban_to_crowdsec": self._state.ban_to_crowdsec,
             # Notifications
             "notify_on_ban": self._state.notify_on_ban,
+            # Rule-free detection
+            "generic_npm_enabled": self._state.generic_npm_enabled,
         }
 
     def is_whitelisted(self, ip: str) -> bool:
@@ -2578,6 +2626,9 @@ class LogScanner:
                     log.debug("Skipped old log line (%dmin old): %s", int(age_seconds/60), line[:100])
                     return
         result = extract_ip(line)
+        if not result and self.config._state.generic_npm_enabled:
+            # No explicit rule matched — try the rule-free NPM behavioural detector.
+            result = _generic_npm_match(line)
         if result:
             ip, pattern_name = result
             url = ""
@@ -2832,6 +2883,9 @@ def build_app(config, bans, detector, source_mgr, alerts, scanner=None,  # noqa:
         # Notifications
         if "notify_on_ban" in d:
             config._state.notify_on_ban = bool(d["notify_on_ban"])
+        # Rule-free detection
+        if "generic_npm_enabled" in d:
+            config._state.generic_npm_enabled = bool(d["generic_npm_enabled"])
         config.save()
         return web.json_response({"ok": True})
 

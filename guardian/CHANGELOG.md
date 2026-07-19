@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.30.0 – 2026-07-19
+
+### Added
+- **Rule-free Nginx Proxy Manager detection** (opt-in, Settings → Detection): a behavioural catch-all that bans IPs accumulating `401`/`403` responses in the uniform NPM access-log format — on *any* proxied service, without a service-specific rule. Since every proxied app is normalised to the same `… - <status> … "<path>" [Client <ip>]` shape, one parser replaces the need for per-app rules and also catches unknown/new services. Uses the existing attempt threshold and whitelist. `404` is deliberately excluded (noisy); scanner probing stays the opt-in `http_scan_404` rule. Detected bans show up as `generic_npm_401` / `generic_npm_403` in the dashboard.
+
 ## 1.29.0 – 2026-07-19
 
 ### Fixed – Detection rules audited & hardened

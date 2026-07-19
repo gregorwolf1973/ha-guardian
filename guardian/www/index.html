@@ -511,6 +511,15 @@
       </div>
 
       <div class="field-group" style="grid-column: 1 / -1">
+        <h3>Detection</h3>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="cfgGenericNpm" style="width:16px;height:16px">
+          <span>Rule-free <strong>Nginx Proxy Manager</strong> detection (behavioural catch-all)</span>
+        </label>
+        <div class="hint" style="margin-top:6px">Bans IPs that pile up <strong>401/403</strong> responses in the NPM access log — on <em>any</em> proxied service, with no per-app rule. Catches unknown services, but is less precise than explicit rules (uses the same attempt threshold). Off by default.</div>
+      </div>
+
+      <div class="field-group" style="grid-column: 1 / -1">
         <h3>CrowdSec Integration</h3>
         <div style="background:var(--surface-alt,#1e1e2e);border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.8">
           <strong>One-time setup</strong> — run this in the <em>CrowdSec addon terminal</em>:<br>
@@ -1277,6 +1286,7 @@ async function loadSettings() {
     document.getElementById('cfgBanIpbans').checked = c.ban_to_ipbans !== false;  // default true
     document.getElementById('cfgBanCrowdsec').checked = !!c.ban_to_crowdsec;
     document.getElementById('cfgNotifyOnBan').checked = c.notify_on_ban !== false;  // default true
+    document.getElementById('cfgGenericNpm').checked = c.generic_npm_enabled === true;  // default false
     // CrowdSec
     document.getElementById('cfgCsUrl').value = c.crowdsec_lapi_url || '';
     document.getElementById('cfgCsMachineId').value = c.crowdsec_machine_id || '';
@@ -1388,6 +1398,7 @@ async function saveSettings(ev) {
       ban_to_ipbans: document.getElementById('cfgBanIpbans').checked,
       ban_to_crowdsec: document.getElementById('cfgBanCrowdsec').checked,
       notify_on_ban: document.getElementById('cfgNotifyOnBan').checked,
+      generic_npm_enabled: document.getElementById('cfgGenericNpm').checked,
       crowdsec_lapi_url: document.getElementById('cfgCsUrl').value.trim(),
       crowdsec_machine_id: document.getElementById('cfgCsMachineId').value.trim(),
     };
