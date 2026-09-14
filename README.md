@@ -68,7 +68,9 @@ Attacker → Nginx Proxy Manager → Addon (2FAuth, Vaultwarden…)
 - 🎯 **Ban Targets** – ip_bans.yaml and CrowdSec independently toggleable
 - ⏱️ **Time window filtering** – only log entries within the configured window count
 - 🌐 **Nginx Proxy Manager integration** – detects real client IPs behind the HA proxy
-- 📋 **15+ detection rules** – preconfigured for common services
+- 📋 **30 detection rules** – preconfigured for common services
+- 🧠 **Rule-free NPM detection** – optional behavioural catch-all for 401/403 responses behind Nginx Proxy Manager
+- 🔔 **HA notifications** – persistent notification in Home Assistant on each ban
 - ✏️ **Rules editor** – edit, add, disable or reset rules to factory defaults
 - 🔒 **Whitelist** – permanently protect IPs and CIDR ranges, auto-whitelist your own IP
 - 🩺 **Health Check** – verifies log sources are active (entries within last 7 days)
@@ -111,6 +113,15 @@ Values on the HA addon configuration page only serve as initial defaults.
 | **Alert Window (hrs)** | `24` | How far back events are shown on the dashboard |
 | **Log File** | `/config/home-assistant.log` | Path to the HA Core log file |
 
+Under **Advanced – Scanning intervals**:
+
+| Setting | Default | Description |
+|---|---|---|
+| `scan_interval_seconds` | `1` | Interval of the log scan loop (seconds) |
+| `addon_poll_interval` | `15` | Docker logs of addons are polled every N scan cycles |
+| `log_interval_minutes` | `5` | Interval of the status line in the addon log (minutes) |
+| `discover_interval_minutes` | `1` | Interval for discovering new log files and addon sources (minutes) |
+
 > **Note:** HA's built-in ban mechanism (`ip_ban_enabled`) and Guardian work independently and can run simultaneously. HA only protects its own web interface, Guardian protects all monitored addons.
 
 ---
@@ -123,6 +134,7 @@ Under **Ban Targets** in the Settings tab you can choose where bans are written:
 |---|---|---|
 | **ip_bans.yaml** | ✅ On | Writes bans to HA's native `ip_bans.yaml` (Application Layer) |
 | **CrowdSec** | ✅ On | Sends bans to the CrowdSec LAPI (Network Layer) |
+| **Home Assistant notification on each ban** | ✅ On | Creates a persistent notification in HA for every ban |
 
 Both targets can be toggled independently. For example, you can use only CrowdSec without writing to `ip_bans.yaml`.
 
@@ -144,7 +156,7 @@ Guardian can send bans directly to the [CrowdSec Local API](https://docs.crowdse
 
 1. Open the **Settings tab**
 2. Under **CrowdSec LAPI** fill in:
-   - **LAPI URL**: e.g. `http://a0d7b816-crowdsec:8080` (internal Docker hostname of the CrowdSec addon)
+   - **LAPI URL**: e.g. `http://a0d7b816-crowdsec:8080` (internal Docker hostname of the CrowdSec addon) – or click **Auto-discover** to detect it automatically
    - **Machine ID**: `ha-guardian` (as specified in `cscli machines add`)
    - **Password**: the chosen password (plaintext, **not** the SHA256 hash)
 3. Click **Test Connection** → a green toast appears on success
@@ -245,6 +257,22 @@ Log files discovered by Guardian but not needed can be marked as unused via **Re
 | `ha_core_invalid_auth` | HA Core invalid_auth events |
 | `http_login_fail` | Generic HTTP 4xx/5xx login endpoints |
 | `npm_proxy` | Nginx Proxy Manager – real client IP via `[Client X.X.X.X]` |
+| `ssh_invalid_user` | SSH invalid user attempts |
+| `ssh_preauth` | SSH connections closed/reset during preauth (scanners) |
+| `ssh_pam_auth_fail` | SSH PAM authentication failures (`rhost=`) |
+| `laravel_ip_first` | Laravel applications (IP before failure keyword) |
+| `webtrees_fail_redirect` | Webtrees login page shown again after failure (via NPM) |
+| `photoprism_login` | PhotoPrism 401 on `/api/v1/session` (via NPM) |
+| `npm_nextcloud_fail` | Nextcloud failed login (via NPM) |
+| `wordpress_bf` | WordPress `wp-login.php` brute force |
+| `wp_xmlrpc` | WordPress `xmlrpc.php` brute force |
+| `http_scan_404` | HTTP scanner probing via 404s (disabled by default) |
+| `roundcube_bf` | Roundcube webmail failed logins |
+| `gitea_forgejo_bf` | Gitea/Forgejo failed logins |
+| `proxmox_bf` | Proxmox VE authentication failures |
+| `ftp_fail` | FTP failed logins (vsftpd, proftpd, pure-ftpd) |
+| `imap_dovecot_bf` | Dovecot IMAP failed logins (`rip=`) |
+| `apache_auth_fail` | Apache user authentication failures |
 
 ### Managing Rules
 
@@ -264,6 +292,10 @@ Log files discovered by Guardian but not needed can be marked as unused via **Re
    ```
 4. **Test** against a sample log line
 5. Save – rule is active immediately
+
+### Rule-Free NPM Detection
+
+Enable **Settings → Detection → "Rule-free Nginx Proxy Manager detection"** (off by default) and Guardian bans any IP that accumulates **401/403** responses in the NPM access log across any proxied service – no per-app rule needed. It uses the normal `max_attempts` / `window_minutes` threshold and respects the whitelist; `404` is not counted. Such bans appear as `generic_npm_401` / `generic_npm_403`.
 
 ### Unmatched Auth Lines
 
@@ -285,8 +317,7 @@ On first opening the Guardian UI, your public IP (via ipinfo.io) is automaticall
 ### Whitelisted by Default
 
 - `127.0.0.1` – localhost
-- `172.30.32.0/24` – HA internal network
-- `192.168.0.0/16` – local home network
+- `172.30.32.0/23` – HA internal network
 
 ### Manual Entries
 

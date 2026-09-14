@@ -22,6 +22,10 @@ Brute-force protection for Home Assistant: monitors logs of all installed addons
 | `ban_duration_minutes` | `240` | Ban duration in minutes (`0` = permanent) |
 | `alert_window_hours` | `24` | Time range for dashboard display (hours) |
 | `log_file` | `/config/home-assistant.log` | Path to HA Core log file |
+| `scan_interval_seconds` | `1` | Interval of the log scan loop (seconds) |
+| `addon_poll_interval` | `15` | Docker logs of addons are polled every N scan cycles |
+| `log_interval_minutes` | `5` | Interval of the status line in the addon log (minutes) |
+| `discover_interval_minutes` | `1` | Interval for discovering new log files and addon sources (minutes) |
 
 > All settings can also be changed in the **Settings tab** of the Web UI.
 
@@ -154,7 +158,7 @@ Enable **Settings → Detection → "Rule-free Nginx Proxy Manager detection"** 
 
 - **Auto-whitelist**: your public IP is automatically detected and added when opening the UI. Updated automatically on IP change.
 - **Manual**: single IPs (`1.2.3.4`) or CIDR ranges (`192.168.178.0/24`)
-- Internal addresses (`127.0.0.1`, `172.30.32.0/24`, `192.168.0.0/16`) are protected by default
+- Internal addresses (`127.0.0.1`, `172.30.32.0/23`) are protected by default
 
 ---
 

@@ -68,7 +68,9 @@ Angreifer → Nginx Proxy Manager → Addon (2FAuth, Vaultwarden…)
 - 🎯 **Ban Targets** – ip_bans.yaml und CrowdSec unabhängig ein-/ausschaltbar
 - ⏱️ **Zeitfenster-Filterung** – nur Log-Einträge innerhalb des konfigurierten Fensters zählen
 - 🌐 **Nginx Proxy Manager Integration** – erkennt echte Client-IPs hinter dem HA-Proxy
-- 📋 **15+ Erkennungsregeln** – vorkonfiguriert für gängige Dienste
+- 📋 **30 Erkennungsregeln** – vorkonfiguriert für gängige Dienste
+- 🧠 **Regelfreie NPM-Erkennung** – optionaler verhaltensbasierter Catch-all für 401/403-Antworten hinter Nginx Proxy Manager
+- 🔔 **HA-Benachrichtigungen** – persistente Benachrichtigung in Home Assistant bei jedem Ban
 - ✏️ **Rules-Editor** – Regeln bearbeiten, hinzufügen, deaktivieren oder auf Werkseinstellungen zurücksetzen
 - 🔒 **Whitelist** – IPs und CIDR-Bereiche dauerhaft schützen, Auto-Whitelist der eigenen IP
 - 🩺 **Health Check** – prüft ob Log-Quellen aktiv sind (Einträge in den letzten 7 Tagen)
@@ -111,6 +113,15 @@ Die Werte in der HA-Addon-Konfigurationsseite dienen nur als initiale Standardwe
 | **Alert-Fenster (Std.)** | `24` | Wie weit zurück Ereignisse im Dashboard angezeigt werden |
 | **Log-Datei** | `/config/home-assistant.log` | Pfad zur HA-Core-Log-Datei |
 
+Unter **Advanced – Scanning intervals**:
+
+| Einstellung | Standard | Beschreibung |
+|---|---|---|
+| `scan_interval_seconds` | `1` | Intervall der Log-Scan-Schleife (Sekunden) |
+| `addon_poll_interval` | `15` | Docker-Logs der Addons werden alle N Scan-Durchläufe abgefragt |
+| `log_interval_minutes` | `5` | Intervall der Statuszeile im Addon-Log (Minuten) |
+| `discover_interval_minutes` | `1` | Intervall für die Suche nach neuen Log-Dateien und Addon-Quellen (Minuten) |
+
 > **Hinweis:** HA's eingebauter Bann-Mechanismus (`ip_ban_enabled`) und Guardian arbeiten unabhängig voneinander und können problemlos gleichzeitig aktiv sein. HA schützt nur die eigene Weboberfläche, Guardian zusätzlich alle anderen Addons.
 
 ---
@@ -123,6 +134,7 @@ Im Settings-Tab kann unter **Ban Targets** festgelegt werden, wohin Bans geschri
 |---|---|---|
 | **ip_bans.yaml** | ✅ An | Schreibt Bans in HA's native `ip_bans.yaml` (Application Layer) |
 | **CrowdSec** | ✅ An | Sendet Bans an die CrowdSec LAPI (Network Layer) |
+| **Home Assistant notification on each ban** | ✅ An | Erstellt bei jedem Ban eine persistente Benachrichtigung in HA |
 
 Beide Targets können unabhängig voneinander ein- und ausgeschaltet werden. So kann z. B. nur CrowdSec als Ban-Ziel verwendet werden, ohne dass `ip_bans.yaml` geschrieben wird.
 
@@ -144,7 +156,7 @@ Guardian kann Bans direkt an die [CrowdSec Local API](https://docs.crowdsec.net/
 
 1. **Settings-Tab** öffnen
 2. Unter **CrowdSec LAPI** die Felder ausfüllen:
-   - **LAPI URL**: z. B. `http://a]0d7b816-crowdsec:8080` (interner Docker-Hostname des CrowdSec-Addons)
+   - **LAPI URL**: z. B. `http://a0d7b816-crowdsec:8080` (interner Docker-Hostname des CrowdSec-Addons) – oder **Auto-discover** klicken, um sie automatisch zu ermitteln
    - **Machine ID**: `ha-guardian` (wie bei `cscli machines add` angegeben)
    - **Password**: das gewählte Passwort (Klartext, **nicht** der SHA256-Hash)
 3. **Test Connection** klicken → bei Erfolg erscheint ein grüner Toast
@@ -245,6 +257,22 @@ Log-Dateien, die von Guardian entdeckt aber nicht benötigt werden, können übe
 | `ha_core_invalid_auth` | HA Core invalid_auth Ereignisse |
 | `http_login_fail` | Generische HTTP 4xx/5xx Login-Endpoints |
 | `npm_proxy` | Nginx Proxy Manager – echte Client-IP via `[Client X.X.X.X]` |
+| `ssh_invalid_user` | SSH-Versuche mit ungültigem Benutzer |
+| `ssh_preauth` | SSH-Verbindungen, die im Preauth geschlossen/zurückgesetzt werden (Scanner) |
+| `ssh_pam_auth_fail` | SSH-PAM-Authentifizierungsfehler (`rhost=`) |
+| `laravel_ip_first` | Laravel-Applikationen (IP vor dem Fehler-Schlüsselwort) |
+| `webtrees_fail_redirect` | Webtrees – Login-Seite nach Fehllogin erneut angezeigt (via NPM) |
+| `photoprism_login` | PhotoPrism 401 auf `/api/v1/session` (via NPM) |
+| `npm_nextcloud_fail` | Nextcloud-Fehllogins (via NPM) |
+| `wordpress_bf` | WordPress `wp-login.php` Brute Force |
+| `wp_xmlrpc` | WordPress `xmlrpc.php` Brute Force |
+| `http_scan_404` | HTTP-Scanner / Probing via 404 (standardmäßig deaktiviert) |
+| `roundcube_bf` | Roundcube-Webmail-Fehllogins |
+| `gitea_forgejo_bf` | Gitea/Forgejo-Fehllogins |
+| `proxmox_bf` | Proxmox-VE-Authentifizierungsfehler |
+| `ftp_fail` | FTP-Fehllogins (vsftpd, proftpd, pure-ftpd) |
+| `imap_dovecot_bf` | Dovecot-IMAP-Fehllogins (`rip=`) |
+| `apache_auth_fail` | Apache-Authentifizierungsfehler |
 
 ### Regeln verwalten
 
@@ -264,6 +292,10 @@ Log-Dateien, die von Guardian entdeckt aber nicht benötigt werden, können übe
    ```
 4. Mit **Test** gegen eine Beispiel-Log-Zeile testen
 5. Speichern – Regel ist sofort aktiv
+
+### Regelfreie NPM-Erkennung
+
+Ist **Settings → Detection → „Rule-free Nginx Proxy Manager detection"** aktiviert (standardmäßig aus), sperrt Guardian jede IP, die im NPM-Access-Log über beliebige Dienste hinweg **401/403**-Antworten ansammelt – ohne app-spezifische Regel. Es gelten die normalen Schwellwerte `max_attempts` / `window_minutes` und die Whitelist; `404` wird nicht gezählt. Solche Bans erscheinen als `generic_npm_401` / `generic_npm_403`.
 
 ### Unmatched Auth Lines
 
@@ -285,8 +317,7 @@ Beim ersten Öffnen der Guardian-UI wird die eigene öffentliche IP (via ipinfo.
 ### Standardmäßig whitelisted
 
 - `127.0.0.1` – Localhost
-- `172.30.32.0/24` – HA-internes Netzwerk
-- `192.168.0.0/16` – Lokales Heimnetzwerk
+- `172.30.32.0/23` – HA-internes Netzwerk
 
 ### Manuelle Einträge
 
