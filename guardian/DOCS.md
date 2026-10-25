@@ -183,4 +183,4 @@ Enable **Settings → Detection → "Rule-free Nginx Proxy Manager detection"** 
 
 Full documentation and source code: [github.com/gregorwolf1973/ha-guardian](https://github.com/gregorwolf1973/ha-guardian)
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/gregorwolf1973)
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/gregorwolf1973) [![Donate using Liberapay](https://liberapay.com/assets/widgets/donate.svg)](https://liberapay.com/Gregor_Wolf/donate)

@@ -16,6 +16,7 @@
   <a href="https://buymeacoffee.com/gregorwolf1973">
     <img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee">
   </a>
+  <a href="https://liberapay.com/Gregor_Wolf/donate"><img src="https://liberapay.com/assets/widgets/donate.svg" alt="Donate using Liberapay" height="40"></a>
 </p>
 
 **Brute-force-Schutz für Home Assistant** – überwacht Logs aller installierten Addons, erkennt fehlgeschlagene Anmeldeversuche und sperrt angreifende IPs automatisch über `ip_bans.yaml` (Application Layer) und optional via **CrowdSec LAPI** (Network Layer).
