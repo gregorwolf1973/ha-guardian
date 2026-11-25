@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.30.1
+- Prebuilt images from GitHub Container Registry: installs and updates no
+  longer build locally.
+
 ## 1.30.0 – 2026-07-19
 
 ### Added

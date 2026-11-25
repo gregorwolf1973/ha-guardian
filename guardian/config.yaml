@@ -1,5 +1,6 @@
 name: "HA Guardian"
-version: "1.30.0"
+version: "1.30.1"
+image: ghcr.io/gregorwolf1973/{arch}-addon-ha_guardian
 slug: "ha_guardian"
 description: "Brute-force protection for Home Assistant – monitors logs and auto-bans attacking IPs via ip_bans.yaml (application layer) with optional network-level blocking"
 url: "https://github.com/gregorwolf1973/ha-guardian"
